@@ -8,3 +8,4 @@ log_environment_interfaces*
 AutumnBenchmark
 log
 python_examples/autumnbench/example_benchmark/*
+python_examples/autumnbench/llm_cache.db

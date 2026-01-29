@@ -13,6 +13,10 @@ import requests
 # from google import genai
 import base64
 import re
+import logging
+import sqlite3
+import hashlib
+from logging.handlers import RotatingFileHandler
 
 try:
     from llama_cpp import Llama
@@ -21,6 +25,173 @@ except ImportError:
     LLAMA_CPP_AVAILABLE = False
 
 load_dotenv()
+
+
+# --- LLM Usage Logger + Cache (OpenRouter only for now) ---
+
+# Pricing (in USD per 1 million tokens)
+MODEL_PRICING = {
+    "google/gemini-2.5-pro": {
+        "tiers": [
+            {"up_to_tokens": 200000, "input": 1.25, "output": 10.00},
+            {"up_to_tokens": float("inf"), "input": 2.50, "output": 15.00},
+        ]
+    },
+    "google/gemini-3-pro-preview": {
+        "tiers": [
+            {"up_to_tokens": float("inf"), "input": 2.00, "output": 12.00},
+        ]
+    },
+    "default": {
+        "tiers": [
+            {"up_to_tokens": float("inf"), "input": 1.00, "output": 3.00}
+        ]
+    },
+}
+
+
+def get_pricing_for_request(model_name: str, prompt_tokens: int) -> dict:
+    """Selects the correct pricing tier based on the number of prompt tokens."""
+    model_info = MODEL_PRICING.get(model_name, MODEL_PRICING["default"])
+    tiers = model_info.get("tiers", [])
+    for tier in tiers:
+        if prompt_tokens < tier["up_to_tokens"]:
+            return {"input": tier["input"], "output": tier["output"]}
+    if tiers:
+        last_tier = tiers[-1]
+        return {"input": last_tier["input"], "output": last_tier["output"]}
+    return {"input": 1.00, "output": 3.00}
+
+
+def calculate_cost(model_name: str, prompt_tokens: int,
+                   completion_tokens: int) -> float:
+    pricing = get_pricing_for_request(model_name, prompt_tokens)
+    input_cost = (prompt_tokens / 1_000_000) * pricing["input"]
+    output_cost = (completion_tokens / 1_000_000) * pricing["output"]
+    return input_cost + output_cost
+
+
+def setup_llm_logger():
+    log_dir = os.path.join(os.path.dirname(__file__), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "llm_usage.log")
+
+    logger = logging.getLogger("llm_usage")
+    logger.setLevel(logging.INFO)
+
+    if not logger.handlers:
+        handler = RotatingFileHandler(log_file,
+                                      maxBytes=10 * 1024 * 1024,
+                                      backupCount=5)
+        formatter = logging.Formatter(
+            "%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    return logger
+
+
+llm_usage_logger = setup_llm_logger()
+
+
+def log_usage(model: str, prompt_tokens: int, completion_tokens: int):
+    total_tokens = prompt_tokens + completion_tokens
+    cost = calculate_cost(model, prompt_tokens, completion_tokens)
+    log_message = (
+        f"Model: {model}, "
+        f"PromptTokens: {prompt_tokens}, "
+        f"CompletionTokens: {completion_tokens}, "
+        f"TotalTokens: {total_tokens}, "
+        f"EstimatedCostUSD: {cost:.8f}"
+    )
+    llm_usage_logger.info(log_message)
+
+
+def log_cache_hit(key: str):
+    llm_usage_logger.info(f"CacheHit: Key={key}")
+
+
+CACHE_DB_PATH = os.path.join(os.path.dirname(__file__), "llm_cache.db")
+
+
+def init_cache():
+    with sqlite3.connect(CACHE_DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS llm_cache (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+
+
+def get_from_cache(key: str) -> str | None:
+    with sqlite3.connect(CACHE_DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM llm_cache WHERE key = ?", (key,))
+        result = cursor.fetchone()
+        return result[0] if result else None
+
+
+def set_to_cache(key: str, value: str):
+    with sqlite3.connect(CACHE_DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO llm_cache (key, value) VALUES (?, ?)",
+            (key, value))
+        conn.commit()
+
+
+def create_cache_key(data: Any) -> str:
+    serialized_data = json.dumps(data, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(serialized_data).hexdigest()
+
+
+def _serialize_images_for_cache(images: Optional[List[str]]) -> List[str]:
+    if not images:
+        return []
+    serialized = []
+    for img in images:
+        if isinstance(img, bytes):
+            serialized.append(base64.b64encode(img).decode("utf-8"))
+        else:
+            serialized.append(str(img))
+    return serialized
+
+
+def _serialize_message_for_cache(message: "Message") -> Dict[str, Any]:
+    return {
+        "role": message.role,
+        "content": message.content,
+        "base64_images": message.base64_images or [],
+        "media_types": message.media_types or [],
+    }
+
+
+def _extract_usage_from_response(response: Any) -> Tuple[int, int]:
+    usage = getattr(response, "usage", None)
+    if usage is None and hasattr(response, "usage_metadata"):
+        usage = response.usage_metadata
+    if usage:
+        if isinstance(usage, dict):
+            prompt_tokens = usage.get("prompt_tokens",
+                                      usage.get("input_tokens", 0))
+            completion_tokens = usage.get("completion_tokens",
+                                          usage.get("output_tokens", 0))
+            return int(prompt_tokens or 0), int(completion_tokens or 0)
+        prompt_tokens = getattr(usage, "prompt_tokens", None)
+        completion_tokens = getattr(usage, "completion_tokens", None)
+        if prompt_tokens is None:
+            prompt_tokens = getattr(usage, "input_tokens", 0)
+        if completion_tokens is None:
+            completion_tokens = getattr(usage, "output_tokens", 0)
+        return int(prompt_tokens or 0), int(completion_tokens or 0)
+    return 0, 0
+
+
+# Initialize cache on import
+init_cache()
 
 
 class Message:
@@ -421,12 +592,32 @@ class OpenRouterProvider(AIProvider):
             self,
             messages: List[dict],
             generate_options: Optional[Dict[str, Any]] = {}) -> str:
+        cache_payload = {
+            "provider": "openrouter",
+            "model": self.model_name,
+            "messages": messages,
+            "generate_options": generate_options,
+        }
+        cache_key = create_cache_key(cache_payload)
+        cached_response = get_from_cache(cache_key)
+        if cached_response:
+            log_cache_hit(cache_key)
+            return cached_response
 
-        response = self.client.chat.completions.create(model=self.model_name,
-                                                       messages=messages,
-                                                       max_tokens=8192,
-                                                       **generate_options)
-        return response.choices[0].message.content
+        response = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            max_tokens=8192,
+            **generate_options,
+        )
+        content = response.choices[0].message.content
+        prompt_tokens, completion_tokens = _extract_usage_from_response(
+            response)
+        if prompt_tokens or completion_tokens:
+            log_usage(self.model_name, prompt_tokens, completion_tokens)
+        if isinstance(content, str):
+            set_to_cache(cache_key, content)
+        return content
 
     @backoff.on_exception(backoff.expo, Exception, max_tries=3)
     def generate(self,
@@ -445,12 +636,32 @@ class OpenRouterProvider(AIProvider):
             "content": self._format_content(content, images)
         }]
 
+        cache_payload = {
+            "provider": "openrouter",
+            "model": self.model_name,
+            "system_prompt": system_prompt,
+            "content": content,
+            "images": _serialize_images_for_cache(images),
+        }
+        cache_key = create_cache_key(cache_payload)
+        cached_response = get_from_cache(cache_key)
+        if cached_response:
+            log_cache_hit(cache_key)
+            return cached_response, messages
+
         response = self.client.chat.completions.create(
             model=self.model_name,
             messages=messages,
             max_tokens=8192,
         )
-        return response.choices[0].message.content, messages
+        content_out = response.choices[0].message.content
+        prompt_tokens, completion_tokens = _extract_usage_from_response(
+            response)
+        if prompt_tokens or completion_tokens:
+            log_usage(self.model_name, prompt_tokens, completion_tokens)
+        if isinstance(content_out, str):
+            set_to_cache(cache_key, content_out)
+        return content_out, messages
 
     def _format_content(self,
                         content: str,
@@ -485,12 +696,32 @@ class OpenRouterProvider(AIProvider):
             "content": self._format_content(content, images)
         }]
 
+        cache_payload = {
+            "provider": "openrouter",
+            "model": self.model_name,
+            "system_prompt": system_prompt,
+            "content": content,
+            "images": _serialize_images_for_cache(images),
+        }
+        cache_key = create_cache_key(cache_payload)
+        cached_response = get_from_cache(cache_key)
+        if cached_response:
+            log_cache_hit(cache_key)
+            return cached_response
+
         response = await self.client.chat.completions.create(
             model=self.model_name,
             messages=messages,
             max_tokens=8192,
         )
-        return response.choices[0].message.content
+        content_out = response.choices[0].message.content
+        prompt_tokens, completion_tokens = _extract_usage_from_response(
+            response)
+        if prompt_tokens or completion_tokens:
+            log_usage(self.model_name, prompt_tokens, completion_tokens)
+        if isinstance(content_out, str):
+            set_to_cache(cache_key, content_out)
+        return content_out
 
     @backoff.on_exception(backoff.expo, Exception, max_tries=3)
     def generate_formatted_prompt(
@@ -525,11 +756,34 @@ class OpenRouterProvider(AIProvider):
                         }
                     } for img in part.base64_images)
             final_prompt_parts.append({"role": part.role, "content": content})
-        return self.client.chat.completions.create(
+        cache_payload = {
+            "provider": "openrouter",
+            "model": self.model_name,
+            "system_prompt": system_prompt,
+            "prompt_parts": [
+                _serialize_message_for_cache(p) for p in prompt_parts
+            ],
+            "generate_options": generate_options,
+        }
+        cache_key = create_cache_key(cache_payload)
+        cached_response = get_from_cache(cache_key)
+        if cached_response:
+            log_cache_hit(cache_key)
+            return cached_response, final_prompt_parts
+
+        response = self.client.chat.completions.create(
             model=self.model_name,
             messages=final_prompt_parts,
             max_tokens=8192,
-            **generate_options).choices[0].message.content, final_prompt_parts
+            **generate_options)
+        content_out = response.choices[0].message.content
+        prompt_tokens, completion_tokens = _extract_usage_from_response(
+            response)
+        if prompt_tokens or completion_tokens:
+            log_usage(self.model_name, prompt_tokens, completion_tokens)
+        if isinstance(content_out, str):
+            set_to_cache(cache_key, content_out)
+        return content_out, final_prompt_parts
 
 
 class ClaudeProvider(AIProvider):
