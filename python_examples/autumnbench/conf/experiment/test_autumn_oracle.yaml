@@ -1,0 +1,30 @@
+# @package _global_
+# Quick test experiment configuration
+
+agent: "autumn_simple_wm_agent" # Oracle autumnSynth agent
+data_dir: "${hydra:runtime.cwd}/python_examples/autumnbench/example_benchmark"
+task_name: "planning"
+model: "google/gemini-2.5-pro"
+
+envs: [
+    "27VWC",  # bbq
+    "7WWW9",  # magnets
+    "7XF97",  # strange, I failed to do induction
+    "83WKQ",  # (random) seems to be random walk
+    "ADA85",  # (random) two transmitters, red and blue, transmit signals to the yellow and white receivers.
+    "AW9WD",  # a strange collapse of yellow soil
+    "BT3GB",  # ice
+    "DGG2C",  # wind
+    "DQ8GC",  # disease
+    "E3V6M",  # rotation of a bar
+    "EAHCW",  # color state machine
+    "F5W3N",  # (random) shot to enemy
+    "N2NTD",  # mario
+    "NRDF6",  # buoyancy
+    "NTQ4Y",  # waterplug
+    "QQM74",  # gravity
+    "QFSVC",  # pac man
+    "S2KT7",  # (random)ants
+    "VA6FQ",  # water and soil
+    "VQJH6",  # gravity
+]

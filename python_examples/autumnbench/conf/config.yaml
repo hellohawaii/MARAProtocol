@@ -7,7 +7,8 @@ data_dir: "./python_examples/autumnbench/example_benchmark"
 
 # Model configuration
 llm_provider: "openrouter"
-model: "google/gemini-flash-1.5"
+# model: "google/gemini-flash-1.5"
+model: "google/gemini-2.5-pro"
 
 # Agent configuration
 agent: "autumn_llm_unified_interactive_agent_v1" # LLM-based agent
