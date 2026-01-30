@@ -25,6 +25,32 @@ fh = logging.FileHandler("log_environment_interfaces.txt")
 logger.addHandler(fh)
 
 CURR_DIR = os.path.dirname(os.path.realpath(__file__))
+_OBFUSCATION_CACHE: Dict[str, Dict[str, str]] = {}
+
+
+def _load_obfuscation_mapping(data_dir: str) -> Dict[str, str]:
+    mapping_path = os.path.join(data_dir, "obfuscation_mapping.json")
+    if mapping_path not in _OBFUSCATION_CACHE:
+        if not os.path.exists(mapping_path):
+            raise FileNotFoundError(
+                f"Obfuscation mapping not found at {mapping_path}"
+            )
+        with open(mapping_path, "r") as f:
+            _OBFUSCATION_CACHE[mapping_path] = json.load(f)
+    return _OBFUSCATION_CACHE[mapping_path]
+
+
+def _obfuscate_scene_graph(render_dict: Dict[str, Any],
+                           mapping: Dict[str, str]) -> Dict[str, Any]:
+    obfuscated = {}
+    for key, value in render_dict.items():
+        if key == "GRID_SIZE":
+            obfuscated[key] = value
+            continue
+        if key not in mapping:
+            raise KeyError(f"Missing obfuscation mapping for object: {key}")
+        obfuscated[mapping[key]] = value
+    return obfuscated
 
 
 class InteractiveEnvironment:
@@ -49,6 +75,7 @@ class InteractiveEnvironment:
         self.logging_path = logging_path
         self.seed = seed
         self.env_name = env_name
+        self.data_dir = data_dir
         self.color_dict = load_yaml_to_dict(f"{data_dir}/color_dict.yaml")
         self.color_dict_str_to_int = {v: k for k, v in self.color_dict.items()}
 
@@ -142,9 +169,19 @@ class InteractiveEnvironment:
                 color_dict=self.color_dict_str_to_int
             )
             render_img_bytes = base64.b64decode(render_img_str)
-        render_dict = render_grid(render_dict, background_color=self.interpreter.get_background(), color_dict=self.color_dict_str_to_int)
         if self.render_mode == "text":
+            render_grid_dict = render_grid(
+                render_dict,
+                background_color=self.interpreter.get_background(),
+                color_dict=self.color_dict_str_to_int
+            )
+            return env_pb2.Observation(text_data=text_data + json.dumps(render_grid_dict))
+        elif self.render_mode == "scene_graph":
             return env_pb2.Observation(text_data=text_data + json.dumps(render_dict))
+        elif self.render_mode == "obfuscated_scene_graph":
+            mapping = _load_obfuscation_mapping(self.data_dir)
+            obfuscated_dict = _obfuscate_scene_graph(render_dict, mapping)
+            return env_pb2.Observation(text_data=text_data + json.dumps(obfuscated_dict))
         elif self.render_mode == "image":
             return env_pb2.Observation(
                 text_data=text_data, image_data=render_img_bytes
@@ -185,7 +222,7 @@ After the interactive phase you will be asked to use this knowledge about the en
 
 class ChangeDetectionEnvironment:
 
-    def __init__(self, env_name, data_dir=CURR_DIR):
+    def __init__(self, env_name, render_mode="text", data_dir=CURR_DIR):
         self.prog = open(f"{data_dir}/programs/{env_name}_change_detection_wrong_program.sexp", "r").read()
         with open(f"{data_dir}/answers/{env_name}_change_detection.json", "r") as f:
             self.event = json.loads(f.read())['condition']
@@ -196,6 +233,10 @@ class ChangeDetectionEnvironment:
         self.frames = []
         self.id = str(uuid.uuid4())
         self.inited = False
+        self.render_mode = render_mode
+        self.data_dir = data_dir
+        self.color_dict = load_yaml_to_dict(f"{data_dir}/color_dict.yaml")
+        self.color_dict_str_to_int = {v: k for k, v in self.color_dict.items()}
 
     def reset(self):
         self.interpreter = Interpreter()
@@ -280,8 +321,17 @@ class ChangeDetectionEnvironment:
                 "You will be penalized if you click 'Fault!' before the change is detected."
             )
         render_dict = json.loads(self.interpreter.render_all())
-        render_dict = render_grid(render_dict, background_color=self.interpreter.get_background(), color_dict=self.color_dict_str_to_int)
-        return env_pb2.Observation(text_data=json.dumps(render_dict))
+        if self.render_mode == "text":
+            render_dict = render_grid(render_dict, background_color=self.interpreter.get_background(), color_dict=self.color_dict_str_to_int)
+            return env_pb2.Observation(text_data=json.dumps(render_dict))
+        elif self.render_mode == "scene_graph":
+            return env_pb2.Observation(text_data=json.dumps(render_dict))
+        elif self.render_mode == "obfuscated_scene_graph":
+            mapping = _load_obfuscation_mapping(self.data_dir)
+            obfuscated_dict = _obfuscate_scene_graph(render_dict, mapping)
+            return env_pb2.Observation(text_data=json.dumps(obfuscated_dict))
+        else:
+            raise ValueError(f"Invalid render mode: {self.render_mode}")
 
     def terminal(self):
         return self.is_terminal
@@ -431,7 +481,7 @@ class CDSliderEnvironment:
             text_data = f"The environment has changed! The change offset from the start of the changed behavior is {self.curr_frame - self.trigger_start_time} frames."
         else:
             text_data = f"You have not detected the change. The change offset from the start of the changed behavior is {self.curr_frame - self.trigger_start_time} frames."
-        if self.render_mode == "text":
+        if self.render_mode in ("text", "scene_graph", "obfuscated_scene_graph"):
             return env_pb2.Observation(text_data=text_data)
         else:
             raise ValueError(f"Invalid render mode: {self.render_mode}")
@@ -467,6 +517,12 @@ class CDSliderEnvironment:
             if self.render_mode == "text":
                 render_dict = render_grid(render_dict, background_color=self.interpreter.get_background(), color_dict=self.color_dict_str_to_int)
                 observation = env_pb2.Observation(text_data=text_data + json.dumps(render_dict))
+            elif self.render_mode == "scene_graph":
+                observation = env_pb2.Observation(text_data=text_data + json.dumps(render_dict))
+            elif self.render_mode == "obfuscated_scene_graph":
+                mapping = _load_obfuscation_mapping(self.data_dir)
+                obfuscated_dict = _obfuscate_scene_graph(render_dict, mapping)
+                observation = env_pb2.Observation(text_data=text_data + json.dumps(obfuscated_dict))
             elif self.render_mode == "image":
                 render_img_str = render_grid_matplotlib(
                     render_dict,
@@ -483,14 +539,14 @@ class CDSliderEnvironment:
             self.frames.append(observation)
             return observation
         elif self.state == "change":
-            if self.render_mode == "text":
+            if self.render_mode in ("text", "scene_graph", "obfuscated_scene_graph"):
                 return env_pb2.Observation(text_data=self.frames[self.curr_frame].text_data)
             elif self.render_mode == "image":
                 return env_pb2.Observation(text_data=text_data, image_data=self.frames[self.curr_frame].image_data)
             else:
                 raise ValueError(f"Invalid render mode: {self.render_mode}")
         else:
-            if self.render_mode == "text":
+            if self.render_mode in ("text", "scene_graph", "obfuscated_scene_graph"):
                 return env_pb2.Observation(text_data=self.frames[self.curr_frame].text_data)
             elif self.render_mode == "image":
                 return env_pb2.Observation(
@@ -608,6 +664,24 @@ class PlanningEnvironment:
                     "goal": self.goal_state,
                     "highlight_mask": self.inv_mask
                 }))
+        elif self.render_mode == "scene_graph":
+            render_dict = json.loads(self.interpreter.render_all())
+            return env_pb2.Observation(
+                text_data=text_data + json.dumps({
+                    "render": render_dict,
+                    "goal": self.goal_state,
+                    "highlight_mask": self.inv_mask
+                }))
+        elif self.render_mode == "obfuscated_scene_graph":
+            render_dict = json.loads(self.interpreter.render_all())
+            mapping = _load_obfuscation_mapping(self.data_dir)
+            obfuscated_dict = _obfuscate_scene_graph(render_dict, mapping)
+            return env_pb2.Observation(
+                text_data=text_data + json.dumps({
+                    "render": obfuscated_dict,
+                    "goal": self.goal_state,
+                    "highlight_mask": self.inv_mask
+                }))
         elif self.render_mode == "image":
             render_dict = json.loads(self.interpreter.render_all())
             render_img_str = render_grid_matplotlib(
@@ -698,7 +772,7 @@ class MARAMFPEnvironment:
         # Convert list of lists to string format for render_string_grid_matplotlib
         color_grid_str = "\n".join([" ".join(row) for row in color_grid])
 
-        if self.render_mode == "text":
+        if self.render_mode in ("text", "scene_graph", "obfuscated_scene_graph"):
             if self.is_finished:
                 if self.prompt["observations"][-1]["action"][
                         "type"] == "click":

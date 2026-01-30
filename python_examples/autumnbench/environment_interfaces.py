@@ -136,7 +136,11 @@ class MARAInteractiveServicer(env_grpc.MARAEnvironmentServicer):
 
 class MARAChangeDetectionServicer(MARAInteractiveServicer):
     def Initialize(self, request: env_service_pb2.InitializeRequest, context):
-        self.environment = ChangeDetectionEnvironment(request.config["env_name"])
+        self.environment = ChangeDetectionEnvironment(
+            request.config["env_name"],
+            render_mode=request.config["render_mode"],
+            data_dir=request.config["data_dir"]
+        )
         
         response = env_service_pb2.InitializeResponse(
             success=True,
