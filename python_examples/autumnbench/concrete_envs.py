@@ -53,6 +53,54 @@ def _obfuscate_scene_graph(render_dict: Dict[str, Any],
     return obfuscated
 
 
+def _goal_to_scene_graph(grid_matrix: List[List[Any]],
+                         background_color: Any = None) -> Dict[str, Any]:
+    scene_graph = {}
+    if not grid_matrix:
+        scene_graph["GRID_SIZE"] = 0
+        return scene_graph
+
+    grid_size = len(grid_matrix)
+    scene_graph["GRID_SIZE"] = grid_size
+
+    for r in range(grid_size):
+        for c in range(grid_size):
+            val = grid_matrix[r][c]
+            if background_color is not None and val == background_color:
+                continue
+
+            key = str(val)
+            if key not in scene_graph:
+                scene_graph[key] = []
+
+            scene_graph[key].append({
+                "position": {
+                    "x": c,
+                    "y": r
+                }
+            })
+    return scene_graph
+
+
+def _mask_to_scene_graph(mask_matrix: List[List[Any]]) -> Union[str, List[Dict[str, int]]]:
+    grid_size = len(mask_matrix)
+    all_ones = True
+    positions = []
+
+    for r in range(grid_size):
+        for c in range(grid_size):
+            val = mask_matrix[r][c]
+            if val != 1:
+                all_ones = False
+            else:
+                positions.append({"x": c, "y": r})
+
+    if all_ones:
+        return "FULL_GRID"
+
+    return positions
+
+
 class InteractiveEnvironment:
 
     def __init__(self,
@@ -647,7 +695,16 @@ class PlanningEnvironment:
         text_data = ""
         if not self.inited:
             self.inited = True
-            text_data = f"""The interaction phase is over, you have entered the test phase. You will now be given a goal state and a highlight mask of the same size as the grid where 1 indicates the region to be reached and 0 indicates the region to be ignored. 
+            if self.render_mode in ("scene_graph", "obfuscated_scene_graph"):
+                mask_note = (
+                    "You will now be given a goal state and a highlight mask. "
+                    "Only the positions indicated by highlight_mask matter for success; all other positions are ignored. "
+                    "highlight_mask is either FULL_GRID (all positions must match) "
+                    "or a list of positions {x, y} to match."
+                )
+            else:
+                mask_note = "You will now be given a goal state and a highlight mask of the same size as the grid where 1 indicates the region to be reached and 0 indicates the region to be ignored. "
+            text_data = f"""The interaction phase is over, you have entered the test phase. {mask_note}
             Your aim is to solve a planning task in the environment you interacted by reaching the goal state in the highlighted region.
             Note that you can no longer reset the environment, so plan carefully. You will be given the same environment as you interacted with in the interaction phase, you need to interact with it to reach the goal state in the highlighted region.
             Your grid will be checked against the goal state and the highlight mask at every timestep. If you reach the goal state in the highlighted region, you will be given a reward. You may choose to quit at any time if you are stuck.
@@ -666,21 +723,29 @@ class PlanningEnvironment:
                 }))
         elif self.render_mode == "scene_graph":
             render_dict = json.loads(self.interpreter.render_all())
+            goal_scene_graph = _goal_to_scene_graph(
+                self.goal_state,
+                background_color=self.interpreter.get_background())
+            mask_scene_graph = _mask_to_scene_graph(self.inv_mask)
             return env_pb2.Observation(
                 text_data=text_data + json.dumps({
                     "render": render_dict,
-                    "goal": self.goal_state,
-                    "highlight_mask": self.inv_mask
+                    "goal": goal_scene_graph,
+                    "highlight_mask": mask_scene_graph
                 }))
         elif self.render_mode == "obfuscated_scene_graph":
             render_dict = json.loads(self.interpreter.render_all())
             mapping = _load_obfuscation_mapping(self.data_dir)
             obfuscated_dict = _obfuscate_scene_graph(render_dict, mapping)
+            goal_scene_graph = _goal_to_scene_graph(
+                self.goal_state,
+                background_color=self.interpreter.get_background())
+            mask_scene_graph = _mask_to_scene_graph(self.inv_mask)
             return env_pb2.Observation(
                 text_data=text_data + json.dumps({
                     "render": obfuscated_dict,
-                    "goal": self.goal_state,
-                    "highlight_mask": self.inv_mask
+                    "goal": goal_scene_graph,
+                    "highlight_mask": mask_scene_graph
                 }))
         elif self.render_mode == "image":
             render_dict = json.loads(self.interpreter.render_all())
