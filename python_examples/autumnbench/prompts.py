@@ -49,7 +49,7 @@ Here is a description of the actions:
 - `up` - Press the up arrow key.
 - `down` - Press the down arrow key.
 - `noop` - Do nothing and continue to the next step.
-- `quit` - Quit the environment. (If you believe that the current state no longer makes it possible to achieve the goal, or that the task is too difficult, please use the quit action promptly.)
+- `quit` - Quit the environment. (If you believe that the current state no longer makes it possible to achieve the goal, you may use the quit action.)
 
 Additional actions will be described whenever available.
 
