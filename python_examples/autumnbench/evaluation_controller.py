@@ -18,7 +18,7 @@ from generated.mara import mara_evaluation_controller_pb2_grpc as controller_grp
 from .environment_interfaces import MARACompositeAutumnChangeDetectionServicer, MARACompositeAutumnPlanningServicer
 from .environment_interfaces_mfp import MARACompositeAutumnMFPServicer
 from .agent import MARARandomAgentServicer
-from .llm_agent import ReactLLMAgentServicer, ReactLLMAgent2, SummaryReactLLMAgent, ReactVLMAgent, UnifiedReactAgent
+from .llm_agent import ReactLLMAgentServicer, ReactLLMAgent2, SummaryReactLLMAgent, ReactVLMAgent, UnifiedReactAgent, OracleReActAgent
 from .simple_wm_agent import SimpleWMAgentServicer
 from generated.mara import mara_environment_service_pb2 as env_service_pb2
 from generated.mara import mara_environment_service_pb2_grpc as env_grpc
@@ -91,6 +91,7 @@ class EvaluationControllerNoServer:
             "autumn_llm_summary_interactive_agent_v1": SummaryReactLLMAgent,
             "autumn_llm_image_interactive_agent_v1": ReactVLMAgent,
             "autumn_llm_unified_interactive_agent_v1": UnifiedReactAgent,
+            "autumn_llm_oracle_react_agent_v1": OracleReActAgent,
             "autumn_simple_wm_agent": SimpleWMAgentServicer,
         }
 

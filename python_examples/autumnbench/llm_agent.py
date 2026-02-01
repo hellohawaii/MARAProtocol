@@ -3,10 +3,13 @@ from .llm_utils import AIFactory, extract_json_response, extract_tagged_response
 from .prompts import (
     ACTION_PROMPT_REACT, 
     ACTION_PROMPT_REFLEXION, 
+    ACTION_PROMPT_ORACLE,
     RESPONSE_PROMPT_SCRATCHPAD, 
     RESPONSE_PROMPT_DEFAULT,
     SYSTEM_PROMPT,
-    SYSTEM_PROMPT_WITH_HINT
+    SYSTEM_PROMPT_WITH_HINT,
+    SYSTEM_PROMPT_PROGRAM_CODE,
+    SYSTEM_PROMPT_ORACLE_PROGRAM_CODE
 )
 
 from typing import List, Tuple
@@ -915,6 +918,8 @@ class UnifiedReactAgent(ReactLLMAgentServicer):
             instructions += f"\n{ACTION_PROMPT_REACT}"
         elif self.instruction_type == "reflection":
             instructions += f"\n{ACTION_PROMPT_REFLEXION}"
+        elif self.instruction_type == "oracle":
+            instructions += f"\n{ACTION_PROMPT_ORACLE}"
         
         if self.use_scratchpad:
             instructions += f"\n{RESPONSE_PROMPT_SCRATCHPAD}"
@@ -1086,6 +1091,115 @@ class UnifiedReactAgent(ReactLLMAgentServicer):
         return agent_pb2.EndEpisodeResponse(
             acknowledged=True
         )
+
+
+class OracleReActAgent(UnifiedReactAgent):
+    def Initialize(self, request, context):
+        super().Initialize(request, context)
+        self.render_mode = request.config.get("render_mode", "text")
+        self.data_dir = request.config.get("data_dir", "./data")
+        self.oracle_program_code = None
+        self.oracle_program_path = None
+        self.phase = "interaction"
+        self.instruction_type = "oracle"
+
+        return agent_pb2.AgentInitializeResponse(
+            success=True,
+            message="OracleReActAgent initialized",
+            agent_id="OracleReActAgent",
+            capabilities={
+                "text_input": "true",
+                "text_output": "true",
+                "image_input": "true",
+                "exploration": "basic"
+            }
+        )
+
+    def Reset(self, request, context):
+        response = super().Reset(request, context)
+        self.phase = "interaction"
+        return response
+
+    def _ensure_oracle_program_loaded(self):
+        if self.oracle_program_code is not None:
+            return
+
+        if self.render_mode not in ("scene_graph", "obfuscated_scene_graph"):
+            raise ValueError(
+                f"OracleReActAgent requires scene_graph render mode, got: {self.render_mode}"
+            )
+
+        base_dir = os.path.join(os.path.dirname(__file__), "example_benchmark")
+        programs_dir = "python_programs_obfuscated" if self.render_mode == "obfuscated_scene_graph" else "python_programs"
+        program_path = os.path.join(base_dir, programs_dir, f"{self.env_name}.py")
+
+        if not os.path.exists(program_path):
+            raise FileNotFoundError(
+                f"Oracle program not found: {program_path}"
+            )
+
+        with open(program_path, "r") as f:
+            self.oracle_program_code = f.read()
+        self.oracle_program_path = program_path
+
+    def format_messages(self, user_messages, assistant_messages, current_message):
+        system_message = SYSTEM_PROMPT_ORACLE_PROGRAM_CODE
+
+        if self.task_name == "planning":
+            self._ensure_oracle_program_loaded()
+            system_message = (
+                f"{system_message}\n\n"
+                f"You have found that the code of ground truth world model is:\n"
+                f"{self.oracle_program_code}"
+            )
+
+        messages = [
+            {
+                "role": "system",
+                "content": system_message
+            }
+        ]
+        if self.max_history_length == -1:
+            for user_message, assistant_message in zip(user_messages, assistant_messages):
+                messages.append(user_message)
+                messages.append(assistant_message)
+        else:
+            if self.use_scratchpad:
+                messages.append({
+                    "role": "user",
+                    "content": f"""
+                    You have a scratchpad that you can use to store information about your interaction with the environment. The scratchpad contains the following:
+                    {self.scratchpad}
+                    """
+                })
+            for user_message, assistant_message in zip(user_messages[-self.max_history_length:], assistant_messages[-self.max_history_length:]):
+                messages.append(user_message)
+                messages.append(assistant_message)
+
+        messages.append(current_message)
+        return messages
+
+    def Act(self, request, context) -> agent_pb2.ActResponse:
+        observation = request.observation
+        available_actions = request.reactive_action_space.available_actions
+
+        if self.phase == "interaction":
+            self.phase = "evaluation"
+            for action in available_actions:
+                if action.text_data == "go-to-test":
+                    return agent_pb2.ActResponse(
+                        action=env_pb2.Action(text_data="go-to-test"),
+                        confidence=0.8,
+                        metadata={"strategy": "oracle_skip_interaction"}
+                    )
+            raise ValueError(
+                "OracleReActAgent expected 'go-to-test' action during interaction phase."
+            )
+
+        if self.task_name == "planning":
+            self._ensure_oracle_program_loaded()
+
+        return super().Act(request, context)
 
 def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
