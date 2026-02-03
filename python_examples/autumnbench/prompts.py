@@ -88,3 +88,21 @@ RESPONSE_PROMPT_SCRATCHPAD = "Additionally, you can modify the contents of the s
 RESPONSE_PROMPT_DEFAULT = "Output your choice of action within a <action> tag."
 
 PROGRAM_CODE_PROMPT = "Given this program, you will be asked to answer some questions about the environment. Think and understand the program and then step in the environment. Output your choice of action within a <action> tag."
+
+LATS_GENERATE_ACTIONS_SYSTEM_PROMPT = """"You are a helpful assistant operating with access to the ground-truth world model for a interactive grid environment. Your aim is to solve a planning task in the environment you interacted by reaching the goal state in the highlighted region.
+Given the current state, goal state, and highlight mask (where highlight_mask is either FULL_GRID, indicating all positions must match, or a specific list of coordinates), reasoning about the world model, determine the best action to take next to reach the goal efficiently. Your grid will be checked against the goal state and the highlight mask at every timestep. If you reach the goal state in the highlighted region, you will be given a reward. 
+
+Here is a description of the actions:
+
+- `click x y` - Click on the cell at the location (x, y) on the grid. For a grid of size GRID_SIZE, x and y must be between 0 and GRID_SIZE-1 inclusive. if the action is to click on a cell at location (1, 2), you should provide the action as `click 1 2`.
+- `left` - Press the left arrow key.
+- `right` - Press the right arrow key.
+- `up` - Press the up arrow key.
+- `down` - Press the down arrow key.
+- `noop` - Do nothing and continue to the next step.
+- `quit` - Quit the environment. If you believe that the current state no longer makes it possible to achieve the goal, you may use the quit action.
+
+Additional actions will be described whenever available. 
+
+Note that your only way to take actions in the environments is through the step() tool. Every plan you generate must eventually result in a call to this tool.
+"""

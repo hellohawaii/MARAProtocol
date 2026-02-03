@@ -1,5 +1,6 @@
 from .agent import agent_grpc, env_pb2, agent_pb2
 from .llm_utils import AIFactory, extract_json_response, extract_tagged_response, Message
+from .lats_planner import LATSPlanner
 from .prompts import (
     ACTION_PROMPT_REACT, 
     ACTION_PROMPT_REFLEXION, 
@@ -1200,6 +1201,123 @@ class OracleReActAgent(UnifiedReactAgent):
             self._ensure_oracle_program_loaded()
 
         return super().Act(request, context)
+
+
+class OracleLATSAgent(agent_grpc.MARAAgentServicer):
+    def Initialize(self, request, context):
+        super().__init__()
+        self.env_name = request.config.get("env_name", "environment")
+        self.render_mode = request.config.get("render_mode", "text")
+        self.data_dir = request.config.get("data_dir", "./data")
+        self.logging_path = request.config.get("logging_path", "./logs")
+        self.llm_provider = request.config.get("llm_provider", "openai")
+        self.llm_model = request.config.get("llm_model", "openai/gpt-4o")
+        self.plan: List[str] = []
+        self.plan_index = 0
+        self.phase = "interaction"
+
+        use_obfuscated = self.render_mode == "obfuscated_scene_graph"
+        self.lats = LATSPlanner(
+            env_name=self.env_name,
+            use_obfuscated_code=use_obfuscated,
+            data_dir=self.data_dir,
+            llm_provider=self.llm_provider,
+            llm_model=self.llm_model,
+            max_depth=int(request.config.get("lats_max_depth", 6)),
+            max_rollouts=int(request.config.get("lats_max_rollouts", 20)),
+            n_candidates=int(request.config.get("lats_n_candidates", 5)),
+            exploration_weight=float(request.config.get("lats_exploration_weight", 1.2)),
+        )
+
+        return agent_pb2.AgentInitializeResponse(
+            success=True,
+            message="OracleLATSAgent initialized",
+            agent_id="OracleLATSAgent",
+            capabilities={
+                "text_input": "true",
+                "text_output": "true",
+                "exploration": "basic",
+            },
+        )
+
+    def Reset(self, request, context):
+        self.plan = []
+        self.plan_index = 0
+        self.phase = "interaction"
+        return agent_pb2.AgentResetResponse(
+            success=True,
+            message="OracleLATSAgent reset",
+        )
+
+    def Act(self, request, context) -> agent_pb2.ActResponse:
+        observation = request.observation
+        available_actions = request.reactive_action_space.available_actions
+        available_action_text = [a.text_data for a in available_actions]
+
+        if self.phase == "interaction":
+            self.phase = "planning"
+            for action in available_actions:
+                if action.text_data == "go-to-test":
+                    return agent_pb2.ActResponse(
+                        action=env_pb2.Action(text_data="go-to-test"),
+                        confidence=0.8,
+                        metadata={"strategy": "oracle_skip_interaction"}
+                    )
+            raise ValueError(
+                "OracleLATSAgent expected 'go-to-test' action during interaction phase."
+            )
+
+        if not self.plan:
+            self.plan = self.lats.plan(observation.text_data, available_action_text) or []
+            self.plan_index = 0
+
+        if self.plan_index >= len(self.plan):
+            return agent_pb2.ActResponse(
+                action=env_pb2.Action(text_data="quit"),
+                confidence=0.5,
+                metadata={"strategy": "lats_finish"},
+            )
+
+        action_text = self.plan[self.plan_index]
+        self.plan_index += 1
+        if action_text not in available_action_text and not action_text.startswith("click "):
+            action_text = "quit"
+
+        return agent_pb2.ActResponse(
+            action=env_pb2.Action(text_data=action_text),
+            confidence=0.7,
+            metadata={"strategy": "lats_execute"},
+        )
+
+    def Feedback(self, request, context) -> agent_pb2.FeedbackResponse:
+        return agent_pb2.FeedbackResponse(acknowledged=True)
+
+    def EndEpisode(self, request, context) -> agent_pb2.EndEpisodeResponse:
+        return agent_pb2.EndEpisodeResponse(acknowledged=True)
+
+    def GetAgentInfo(self, request, context) -> agent_pb2.AgentInfoResponse:
+        return agent_pb2.AgentInfoResponse(
+            agent_id="OracleLATSAgent",
+            version="1.0.0",
+            agent_type=agent_pb2.POLICY,
+            compatible_environment_types=["REACTIVE"],
+            capabilities={
+                "text_input": "true",
+                "text_output": "true",
+                "exploration": "basic",
+            },
+            metadata={
+                "author": "MARA Developer",
+                "domain": "Autumn",
+                "description": "Oracle LATS planning agent that plans once and executes the plan.",
+            },
+        )
+
+    def Close(self, request, context):
+        return agent_pb2.CloseResponse(
+            success=True,
+            message="OracleLATSAgent closed",
+        )
 
 def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))

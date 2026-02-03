@@ -15,6 +15,12 @@ agent: "autumn_llm_unified_interactive_agent_v1" # LLM-based agent
 # agent: "autumn_random_interactive_agent_v1" # Random agent
 # agent: "autumn_simple_wm_agent" # Oracle autumnSynth agent
 
+# LATS Configuration (defaults)
+lats_max_depth: 100
+lats_max_rollouts: 10000
+lats_n_candidates: 5
+lats_exploration_weight: 1.2
+
 use_scratchpad: true
 instruction_type: "reflection"
 hint: true
