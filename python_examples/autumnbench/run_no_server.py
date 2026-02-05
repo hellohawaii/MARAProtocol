@@ -78,7 +78,11 @@ def run_multi_environment_evaluation(cfg: DictConfig):
             "task_name": cfg.task_name,
             "use_scratchpad": cfg.use_scratchpad,
             "instruction_type": cfg.instruction_type,
-            "hint": cfg.hint
+            "hint": cfg.hint,
+            "lats_max_depth": cfg.lats_max_depth,
+            "lats_max_rollouts": cfg.lats_max_rollouts,
+            "lats_n_candidates": cfg.lats_n_candidates,
+            "lats_exploration_weight": cfg.lats_exploration_weight,
         }
     )
 

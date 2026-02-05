@@ -350,6 +350,14 @@ class EvaluationControllerNoServer:
                         self.config.get("data_dir", "./data"),
                         "use_oracle_interpreter_seed":
                         str(self.config.get("use_oracle_interpreter_seed")),
+                        "lats_max_depth":
+                        str(self.config.get("lats_max_depth", 6)),
+                        "lats_max_rollouts":
+                        str(self.config.get("lats_max_rollouts", 20)),
+                        "lats_n_candidates":
+                        str(self.config.get("lats_n_candidates", 5)),
+                        "lats_exploration_weight":
+                        str(self.config.get("lats_exploration_weight", 1.2)),
                     }), None)
             logger.info(
                 f"\n\n[Controller] Agent initialized: {agent_init.message}, id: {agent_init.agent_id}"
@@ -864,7 +872,15 @@ class EvaluationController:
                             "llm_provider":
                             self.config.get("llm_provider", "openai"),
                             "llm_model":
-                            self.config.get("llm_model", "openai/gpt-4o")
+                            self.config.get("llm_model", "openai/gpt-4o"),
+                            "lats_max_depth":
+                            str(self.config.get("lats_max_depth", 6)),
+                            "lats_max_rollouts":
+                            str(self.config.get("lats_max_rollouts", 20)),
+                            "lats_n_candidates":
+                            str(self.config.get("lats_n_candidates", 5)),
+                            "lats_exploration_weight":
+                            str(self.config.get("lats_exploration_weight", 1.2)),
                         }))
                 logger.info(
                     f"\n\n[Controller] Agent initialized: {agent_init.message}, id: {agent_init.agent_id}"
