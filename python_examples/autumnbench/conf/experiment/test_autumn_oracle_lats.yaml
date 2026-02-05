@@ -11,18 +11,16 @@ logging_path: "./logs"
 task_name: "planning"
 
 envs: [
-    "27VWC",  # bbq
-    "AW9WD",  # a strange collapse of yellow soil
-    "BT3GB",  # ice
+    # "BT3GB",  # ice
     "DGG2C",  # wind
-    "N2NTD",  # mario
-    "VA6FQ",  # water and soil（1）
+    # "N2NTD",  # mario
+    # "VA6FQ",  # water and soil（1）
 ]
 
 agent: "autumn_llm_oracle_lats_agent_v1"
 
 # LATS specific configuration
-lats_max_depth: 100
-lats_max_rollouts: 10000
+lats_max_depth: 50
+lats_max_rollouts: 1000
 lats_n_candidates: 5
 lats_exploration_weight: 1.2

@@ -1,8 +1,10 @@
 import json
 import logging
 import math
+import os
 import random
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
@@ -133,12 +135,14 @@ class Node:
         state: Any,
         hidden_state: Any,
         reflection: Reflection,
+        node_id: int,
         parent: Optional["Node"] = None,
         action: Optional[str] = None,
     ) -> None:
         self.state = state
         self.hidden_state = hidden_state
         self.reflection = reflection
+        self.id = node_id
         self.parent = parent
         self.action = action
         self.children: List["Node"] = []
@@ -217,6 +221,7 @@ class LATSPlanner:
         max_rollouts: int = 20,
         n_candidates: int = 5,
         exploration_weight: float = 1.2,
+        logging_path: Optional[str] = None,
     ) -> None:
         self.env_name = env_name
         self.use_obfuscated_code = use_obfuscated_code
@@ -226,6 +231,10 @@ class LATSPlanner:
         self.max_rollouts = max_rollouts
         self.n_candidates = n_candidates
         self.exploration_weight = exploration_weight
+        self.logging_path = logging_path
+        self._log: Optional[Dict[str, Any]] = None
+        self._log_file: Optional[str] = None
+        self._node_counter = 0
 
         self.wm_tool = PythonWorldModelTool(
             env_name=env_name,
@@ -249,8 +258,19 @@ class LATSPlanner:
         if init_state is None:
             raise RuntimeError("LATSPlanner: initial world model state unavailable.")
 
+        self._start_log(observation_text, payload, available_actions)
+
         reflection = self._evaluate_state(init_state, goal, highlight_mask)
-        root = Node(state=init_state, hidden_state=init_hidden, reflection=reflection)
+        root = Node(
+            state=init_state,
+            hidden_state=init_hidden,
+            reflection=reflection,
+            node_id=self._next_node_id(),
+        )
+        self._log_event(
+            "root_created",
+            node=self._node_snapshot(root),
+        )
 
         graph = self._build_graph()
         input_state: TreeState = {
@@ -263,16 +283,24 @@ class LATSPlanner:
         }
 
         last_state: Optional[TreeState] = None
-        for step in graph.stream(input_state):
+        recursion_limit = max(25, int(self.max_rollouts))
+        for step in graph.stream(input_state, {"recursion_limit": recursion_limit}):
             _, last_state = next(iter(step.items()))
             if last_state["root"].is_solved:
                 break
 
         if last_state is None:
+            self._finalize_log(None, None)
             return None
 
         best_node = last_state["root"].get_best_solution()
         actions = best_node.get_trajectory_actions()
+        self._log_event(
+            "best_solution",
+            node=self._node_snapshot(best_node),
+            actions=actions,
+        )
+        self._finalize_log(best_node, actions)
         return actions or None
 
     def _build_graph(self) -> StateGraph:
@@ -298,6 +326,16 @@ class LATSPlanner:
     def _expand(self, state: TreeState) -> TreeState:
         root = state["root"]
         best_candidate = self._select(root)
+        partial_plan = best_candidate.get_trajectory_actions()
+        remaining_steps = best_candidate.reflection.remaining_steps
+        print(
+            f"[LATS expand] depth={best_candidate.depth} remaining_steps={remaining_steps} "
+            f"partial_plan={partial_plan}"
+        )
+        self._log_event(
+            "select",
+            node=self._node_snapshot(best_candidate),
+        )
         
         # If the node cannot be expanded (max depth reached or impossible state),
         # we treat it as a terminal leaf effectively visited again.
@@ -306,6 +344,11 @@ class LATSPlanner:
             best_candidate.depth >= self.max_depth
             or best_candidate.reflection.remaining_steps == -1
         ):
+            self._log_event(
+                "terminal_leaf",
+                node=self._node_snapshot(best_candidate),
+                reason="max_depth" if best_candidate.depth >= self.max_depth else "impossible",
+            )
             best_candidate.backpropagate(best_candidate.value)
             return state
 
@@ -319,9 +362,18 @@ class LATSPlanner:
             highlight_mask,
             available_actions,
         )
+        self._log_event(
+            "candidates",
+            node_id=best_candidate.id,
+            actions=candidates,
+        )
 
         if not candidates:
             # No actions generated (e.g. LLM failure or empty), treat as visited terminal
+            self._log_event(
+                "no_candidates",
+                node=self._node_snapshot(best_candidate),
+            )
             best_candidate.backpropagate(best_candidate.value)
             return state
 
@@ -332,6 +384,11 @@ class LATSPlanner:
         for action in candidates:
             next_state, next_hidden = self._simulate(best_candidate, action)
             if next_state is None:
+                self._log_event(
+                    "simulate_failed",
+                    parent_id=best_candidate.id,
+                    action=action,
+                )
                 continue
             # Handle quit and solved states before LLM evaluation
             if next_state == "__QUIT__":
@@ -343,6 +400,11 @@ class LATSPlanner:
                 next_state = best_candidate.state
                 next_hidden = best_candidate.hidden_state
                 child_specs.append((next_state, next_hidden, action, reflection))
+                self._log_event(
+                    "simulate_quit",
+                    parent_id=best_candidate.id,
+                    action=action,
+                )
                 continue
             if _check_goal_reached(next_state, goal, highlight_mask):
                 reflection = Reflection(
@@ -351,6 +413,11 @@ class LATSPlanner:
                     found_solution=True,
                 )
                 child_specs.append((next_state, next_hidden, action, reflection))
+                self._log_event(
+                    "simulate_goal_reached",
+                    parent_id=best_candidate.id,
+                    action=action,
+                )
                 continue
 
             pending_indices.append(len(child_specs))
@@ -362,6 +429,11 @@ class LATSPlanner:
             for idx, reflection in zip(pending_indices, reflections):
                 state_i, hidden_i, action_i, _ = child_specs[idx]
                 child_specs[idx] = (state_i, hidden_i, action_i, reflection)
+            self._log_event(
+                "evaluated_batch",
+                parent_id=best_candidate.id,
+                reflections=[self._reflection_snapshot(r) for r in reflections],
+            )
 
         for next_state, next_hidden, action, reflection in child_specs:
             if reflection is None:
@@ -374,11 +446,24 @@ class LATSPlanner:
                 state=next_state,
                 hidden_state=next_hidden,
                 reflection=reflection,
+                node_id=self._next_node_id(),
                 parent=best_candidate,
                 action=action,
             )
             child.backpropagate(reflection.normalized_score)
             best_candidate.children.append(child)
+            self._log_event(
+                "child_added",
+                parent_id=best_candidate.id,
+                child=self._node_snapshot(child),
+                action=action,
+                reflection=self._reflection_snapshot(reflection),
+            )
+            self._log_event(
+                "backpropagate",
+                node_id=child.id,
+                reward=reflection.normalized_score,
+            )
 
         return state
 
@@ -459,6 +544,11 @@ class LATSPlanner:
             
             actions = []
             for ai_msg in responses:
+                self._log_event(
+                    "llm_generate_actions_response",
+                    response=self._safe_serialize(ai_msg),
+                    tool_calls=self._safe_serialize(getattr(ai_msg, "tool_calls", None)),
+                )
                 for tool_call in ai_msg.tool_calls:
                     if tool_call["name"] == "python_wm_step":
                         action_arg = tool_call["args"].get("action")
@@ -530,6 +620,10 @@ class LATSPlanner:
                 ("system", prompt),
                 ("user", content)
             ])
+            self._log_event(
+                "llm_reflection_response",
+                response=self._safe_serialize(estimate),
+            )
             result = Reflection(
                 reasoning=estimate.reasoning,
                 remaining_steps=estimate.remaining_steps,
@@ -606,6 +700,10 @@ class LATSPlanner:
             estimates = evaluator.batch(messages_batch)
             results: List[Reflection] = []
             for estimate in estimates:
+                self._log_event(
+                    "llm_reflection_response",
+                    response=self._safe_serialize(estimate),
+                )
                 results.append(
                     Reflection(
                         reasoning=estimate.reasoning,
@@ -624,6 +722,97 @@ class LATSPlanner:
                 )
                 for _ in states
             ]
+
+    def _next_node_id(self) -> int:
+        self._node_counter += 1
+        return self._node_counter
+
+    def _start_log(
+        self,
+        observation_text: str,
+        payload: Dict[str, Any],
+        available_actions: List[str],
+    ) -> None:
+        if not self.logging_path:
+            return
+        log_dir = os.path.join(self.logging_path, self.env_name, "lats")
+        os.makedirs(log_dir, exist_ok=True)
+        timestamp = int(time.time() * 1000)
+        self._log_file = os.path.join(log_dir, f"lats_tree_search_{timestamp}.json")
+        self._log = {
+            "env_name": self.env_name,
+            "max_depth": self.max_depth,
+            "max_rollouts": self.max_rollouts,
+            "n_candidates": self.n_candidates,
+            "exploration_weight": self.exploration_weight,
+            "timestamp_ms": timestamp,
+            "observation_text": observation_text,
+            "available_actions": available_actions,
+            "payload": payload,
+            "events": [],
+        }
+
+    def _log_event(self, event_type: str, **data: Any) -> None:
+        if not self._log:
+            return
+        event = {
+            "type": event_type,
+            "ts_ms": int(time.time() * 1000),
+        }
+        event.update(data)
+        self._log["events"].append(event)
+
+    def _finalize_log(self, best_node: Optional[Node], actions: Optional[List[str]]) -> None:
+        if not self._log or not self._log_file:
+            return
+        if best_node is not None:
+            self._log["best_node"] = self._node_snapshot(best_node)
+            self._log["best_actions"] = actions or []
+        try:
+            with open(self._log_file, "w") as f:
+                json.dump(self._log, f, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            logger.warning(f"Failed to write LATS log: {exc}")
+
+    def _node_snapshot(self, node: Node) -> Dict[str, Any]:
+        return {
+            "id": node.id,
+            "depth": node.depth,
+            "visits": node.visits,
+            "value": node.value,
+            "action": node.action,
+            "is_solved": node.is_solved,
+            "remaining_steps": node.reflection.remaining_steps,
+            "found_solution": node.reflection.found_solution,
+        }
+
+    def _reflection_snapshot(self, reflection: Reflection) -> Dict[str, Any]:
+        return {
+            "reasoning": reflection.reasoning,
+            "remaining_steps": reflection.remaining_steps,
+            "found_solution": reflection.found_solution,
+        }
+
+    def _safe_serialize(self, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {k: self._safe_serialize(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._safe_serialize(v) for v in value]
+        if hasattr(value, "model_dump"):
+            try:
+                return value.model_dump()
+            except Exception:
+                return str(value)
+        if hasattr(value, "dict"):
+            try:
+                return value.dict()
+            except Exception:
+                return str(value)
+        return str(value)
 
 
 def _extract_json_payload(text: str) -> Optional[Dict[str, Any]]:
