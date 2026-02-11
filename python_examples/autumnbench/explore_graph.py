@@ -24,10 +24,12 @@ import logging
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
 
 from langchain.agents import create_agent
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.tools import tool
 from langgraph.graph import END, StateGraph
@@ -46,6 +48,210 @@ from interpreter_module import Interpreter  # noqa: E402
 from autumnstdlib import autumnstdlib  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+try:
+    from PIL import Image, ImageDraw
+except ImportError:  # pragma: no cover
+    Image = None
+    ImageDraw = None
+
+
+def _to_jsonable(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {str(k): _to_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_jsonable(v) for v in obj]
+    if isinstance(obj, tuple):
+        return [_to_jsonable(v) for v in obj]
+    if isinstance(obj, BaseMessage):
+        return {
+            "type": getattr(obj, "type", obj.__class__.__name__),
+            "content": getattr(obj, "content", ""),
+        }
+    return obj
+
+
+def _write_json(path: str, payload: Dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(_to_jsonable(payload), f, ensure_ascii=False, indent=2)
+
+
+def _log_llm_call(explore_log_dir: Optional[str], node_name: str,
+                  llm_input: Any, llm_output: Any, error: Optional[str] = None) -> None:
+    if not explore_log_dir:
+        return
+    ts = int(time.time() * 1000)
+    out_path = os.path.join(
+        explore_log_dir, "llm_calls", f"{ts}_{node_name}.json")
+    _write_json(out_path, {
+        "node": node_name,
+        "llm_input": llm_input,
+        "llm_output": llm_output,
+        "error": error,
+    })
+
+
+class _JsonTraceCallback(BaseCallbackHandler):
+    """Lightweight callback to persist low-level LLM request/response traces."""
+
+    def __init__(self, explore_log_dir: Optional[str]):
+        self.explore_log_dir = explore_log_dir
+
+    def _write_event(self, event: str, run_id: Any, payload: Dict[str, Any]) -> None:
+        if not self.explore_log_dir:
+            return
+        ts = int(time.time() * 1000)
+        rid = str(run_id).replace("-", "")
+        out_path = os.path.join(
+            self.explore_log_dir, "llm_traces", f"{ts}_{rid}_{event}.json")
+        _write_json(out_path, payload)
+
+    def on_chat_model_start(self, serialized: Dict[str, Any], messages: List[List[BaseMessage]],
+                            run_id: Any, **kwargs: Any) -> Any:
+        self._write_event("chat_start", run_id, {
+            "serialized": serialized,
+            "messages": messages,
+        })
+
+    def on_llm_start(self, serialized: Dict[str, Any], prompts: List[str],
+                     run_id: Any, **kwargs: Any) -> Any:
+        self._write_event("llm_start", run_id, {
+            "serialized": serialized,
+            "prompts": prompts,
+        })
+
+    def on_llm_end(self, response: Any, run_id: Any, **kwargs: Any) -> Any:
+        generations: List[str] = []
+        for group in getattr(response, "generations", []) or []:
+            for gen in group:
+                text = getattr(gen, "text", None)
+                if text is None and hasattr(gen, "message"):
+                    text = getattr(gen.message, "content", None)
+                generations.append("" if text is None else str(text))
+        self._write_event("llm_end", run_id, {
+            "generations": generations,
+            "llm_output": getattr(response, "llm_output", {}),
+        })
+
+
+_BASIC_COLORS = {
+    "black": (0, 0, 0),
+    "white": (255, 255, 255),
+    "red": (220, 20, 60),
+    "blue": (65, 105, 225),
+    "green": (50, 205, 50),
+    "yellow": (255, 215, 0),
+    "orange": (255, 140, 0),
+    "purple": (138, 43, 226),
+    "pink": (255, 105, 180),
+    "grey": (128, 128, 128),
+    "gray": (128, 128, 128),
+    "slategrey": (112, 128, 144),
+    "slategray": (112, 128, 144),
+}
+
+
+def _color_to_rgb(color_name: Any) -> tuple:
+    if isinstance(color_name, str):
+        c = color_name.strip().lower()
+        if c in _BASIC_COLORS:
+            return _BASIC_COLORS[c]
+        if c.startswith("#") and len(c) == 7:
+            try:
+                return (int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16))
+            except Exception:
+                pass
+    seed = abs(hash(str(color_name))) % (256 ** 3)
+    return ((seed >> 16) & 255, (seed >> 8) & 255, seed & 255)
+
+
+def _state_to_grid(state: Dict[str, Any]) -> Optional[List[List[str]]]:
+    gs = state.get("GRID_SIZE")
+    if not isinstance(gs, int) or gs <= 0:
+        return None
+    grid = [["black"] * gs for _ in range(gs)]
+    keys = sorted(k for k in state.keys() if k != "GRID_SIZE")
+    if "background" in keys:
+        keys.insert(0, keys.pop(keys.index("background")))
+    for key in keys:
+        objects = state.get(key)
+        if not isinstance(objects, list):
+            continue
+        for obj in objects:
+            if not isinstance(obj, dict):
+                continue
+            pos = obj.get("position")
+            if not isinstance(pos, dict):
+                continue
+            x = pos.get("x")
+            y = pos.get("y")
+            if not isinstance(x, int) or not isinstance(y, int):
+                continue
+            if not (0 <= y < gs and 0 <= x < gs):
+                continue
+            color = obj.get("color", key)
+            grid[y][x] = str(color)
+    return grid
+
+
+def _render_grid_png(grid: List[List[str]], out_path: str, cell_size: int = 24) -> None:
+    if Image is None or ImageDraw is None:
+        return
+    h = len(grid)
+    w = len(grid[0]) if h else 0
+    if h == 0 or w == 0:
+        return
+    img = Image.new("RGB", (w * cell_size, h * cell_size), "black")
+    draw = ImageDraw.Draw(img)
+    for y, row in enumerate(grid):
+        for x, color_name in enumerate(row):
+            rgb = _color_to_rgb(color_name)
+            x0, y0 = x * cell_size, y * cell_size
+            x1, y1 = x0 + cell_size - 1, y0 + cell_size - 1
+            draw.rectangle([x0, y0, x1, y1], fill=rgb)
+            draw.rectangle([x0, y0, x1, y1], outline=(40, 40, 40))
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    img.save(out_path)
+
+
+def _save_trajectory_video_like_artifacts(
+    trajectories: List[Dict[str, Any]],
+    explore_log_dir: Optional[str],
+) -> None:
+    if not explore_log_dir or Image is None:
+        return
+    videos_root = os.path.join(explore_log_dir, "videos")
+    os.makedirs(videos_root, exist_ok=True)
+    for traj_idx, traj in enumerate(trajectories):
+        traj_dir = os.path.join(videos_root, f"trajectory_{traj_idx:03d}")
+        frames_dir = os.path.join(traj_dir, "frames")
+        os.makedirs(frames_dir, exist_ok=True)
+        frame_paths: List[str] = []
+        frames = traj.get("frames", [])
+        for frame_idx, frame in enumerate(frames):
+            raw_state = frame.get("rawFrame", {})
+            grid = _state_to_grid(raw_state)
+            if grid is None:
+                continue
+            png_path = os.path.join(frames_dir, f"frame_{frame_idx:04d}.png")
+            _render_grid_png(grid, png_path)
+            if os.path.isfile(png_path):
+                frame_paths.append(png_path)
+        if not frame_paths:
+            continue
+        gif_path = os.path.join(traj_dir, "trajectory.gif")
+        try:
+            images = [Image.open(p).convert("P") for p in frame_paths]
+            images[0].save(
+                gif_path,
+                save_all=True,
+                append_images=images[1:],
+                duration=300,
+                loop=0,
+            )
+        except Exception as e:
+            logger.warning("Failed to create trajectory gif for %s: %s", traj_dir, e)
 
 
 # ============================================================
@@ -483,6 +689,7 @@ class ExploreState(TypedDict):
     env_name: str
     data_dir: str
     use_obfuscation: bool
+    explore_log_dir: str
 
     # Internal (not exposed to MainState)
     agent_messages: list           # Full ReAct agent conversation history
@@ -566,23 +773,42 @@ def create_explore_graph(llm):
         )
 
         exploration_sufficient = False
+        llm_messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": (
+                "Propose questions for the next exploration round.  "
+                "If you believe the current knowledge is already "
+                "sufficient to fully describe the dynamics and no "
+                "further exploration would be valuable, set "
+                "exploration_sufficient to true."
+            )},
+        ]
         try:
             structured_llm = llm.with_structured_output(ExplorationQuestions)
-            result: ExplorationQuestions = structured_llm.invoke([
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": (
-                    "Propose questions for the next exploration round.  "
-                    "If you believe the current knowledge is already "
-                    "sufficient to fully describe the dynamics and no "
-                    "further exploration would be valuable, set "
-                    "exploration_sufficient to true."
-                )},
-            ])
+            trace_cb = _JsonTraceCallback(state.get("explore_log_dir"))
+            result: ExplorationQuestions = structured_llm.invoke(
+                llm_messages, config={"callbacks": [trace_cb]})
             questions = [q.question for q in result.questions]
             exploration_sufficient = result.exploration_sufficient
+            _log_llm_call(
+                state.get("explore_log_dir"),
+                "generate_explore_questions",
+                llm_messages,
+                {
+                    "exploration_sufficient": exploration_sufficient,
+                    "questions": questions,
+                },
+            )
         except Exception as e:
             logger.error("Question generation failed: %s", e)
             questions = []
+            _log_llm_call(
+                state.get("explore_log_dir"),
+                "generate_explore_questions",
+                llm_messages,
+                {},
+                error=str(e),
+            )
 
         if exploration_sufficient:
             logger.info(
@@ -661,16 +887,51 @@ def create_explore_graph(llm):
 
         agent_messages: list = []
         try:
+            trace_cb = _JsonTraceCallback(state.get("explore_log_dir"))
             result = agent.invoke(
                 {"messages": [{"role": "user", "content": user_message}]},
+                config={"callbacks": [trace_cb]},
             )
             agent_messages = result.get("messages", [])
+            _log_llm_call(
+                state.get("explore_log_dir"),
+                "run_agent",
+                {
+                    "system_prompt": system_prompt,
+                    "initial_user_message": user_message,
+                },
+                {
+                    "agent_messages": agent_messages,
+                    "num_trajectories": len(collected),
+                },
+            )
         except Exception as e:
             logger.error("Exploration agent error: %s", e)
             # Save whatever trajectory we have
             raw_traj = env.get_raw_trajectory()
             if len(raw_traj) > 1:
                 collected.append(convert_env_trajectory(raw_traj))
+            _log_llm_call(
+                state.get("explore_log_dir"),
+                "run_agent",
+                {
+                    "system_prompt": system_prompt,
+                    "initial_user_message": user_message,
+                },
+                {},
+                error=str(e),
+            )
+
+        if state.get("explore_log_dir"):
+            _write_json(
+                os.path.join(state["explore_log_dir"], "collected_trajectories.json"),
+                {
+                    "num_trajectories": len(collected),
+                    "trajectories": collected,
+                },
+            )
+            _save_trajectory_video_like_artifacts(
+                collected, state.get("explore_log_dir"))
 
         logger.info(
             "ExploreGraph: agent collected %d trajectories, %d messages",
@@ -733,21 +994,40 @@ def create_explore_graph(llm):
         # Use structured output
         try:
             structured_llm = llm.with_structured_output(ExplorationSummary)
-            summary: ExplorationSummary = structured_llm.invoke([
+            llm_messages = [
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": (
                     "Based on the exploration conversation above, produce "
                     "structured Q&A pairs summarising what was learned about "
                     "the environment dynamics."
                 )},
-            ])
+            ]
+            trace_cb = _JsonTraceCallback(state.get("explore_log_dir"))
+            summary: ExplorationSummary = structured_llm.invoke(
+                llm_messages, config={"callbacks": [trace_cb]})
             new_qa = [
                 {"question": qa.question, "answer": qa.answer}
                 for qa in summary.qa_pairs
             ]
+            _log_llm_call(
+                state.get("explore_log_dir"),
+                "summarize",
+                llm_messages,
+                {"new_qa": new_qa},
+            )
         except Exception as e:
             logger.error("Summarisation failed: %s", e)
             new_qa = []
+            _log_llm_call(
+                state.get("explore_log_dir"),
+                "summarize",
+                {
+                    "prompt": prompt,
+                    "pending_questions": pending,
+                },
+                {},
+                error=str(e),
+            )
 
         logger.info("ExploreGraph: produced %d Q&A pairs", len(new_qa))
 
