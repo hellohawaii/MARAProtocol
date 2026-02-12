@@ -399,7 +399,8 @@ class ExplorationEnvironment:
     def reset(self):
         self.interpreter = Interpreter()
         self.interpreter.run_script(self.prog, autumnstdlib, "", self.seed)
-        self.time = 0
+        # Keep `time` as a global budget counter across resets within one
+        # exploration run (run_agent_node). Do not reset it here.
         self._trajectory = [{"action": None, "rawFrame": self._get_raw_frame()}]
 
     def step(self, action_str: str) -> str:
@@ -467,29 +468,36 @@ underlying dynamics (transition function).  Your goal is to collect diverse, \
 informative trajectories so that a code-generation system can write a \
 `predict_dynamics(visible_state, hidden_state, action)` function.
 
+This environment is a deterministic grid world: it consists of a grid containing
+cells that can take colors. The grid has width GRID_SIZE and height GRID_SIZE
+(i.e., a GRID_SIZE x GRID_SIZE grid). There is no randomness: the same state
+and action always produce the same next state.
+
+**Environment action space (valid actions):**
+- `click x y` - Click on the cell at location (x, y). For GRID_SIZE, x and y
+  must each be between 0 and GRID_SIZE-1 inclusive.
+- `left` - Press the left arrow key.
+- `right` - Press the right arrow key.
+- `up` - Press the up arrow key.
+- `down` - Press the down arrow key.
+- `noop` - Do nothing and continue to the next step.
+
 **Available tools:**
-- `env_step(action)` — take an action.  Valid actions: \
-`click x y`, `left`, `right`, `up`, `down`, `noop`.
+- `env_step(action)` — execute one environment action from the action space above.
 - `env_reset()` — reset the environment and start collecting a new trajectory.  \
 Use this to gather multiple independent trajectories.
 - `stop_exploration()` — call this when you have completed your current \
 exploration plan.
 
+Important: `env_reset()` and `stop_exploration()` are tools for trajectory
+management; they are not part of the environment action space.
+
 **When to stop:**
 You do NOT need to collect exhaustively complete data before stopping.  This is \
 an iterative process — you will be called again later to explore further.  Stop when:
-- You have collected a few trajectories that cover the basic dynamics (enough for \
-a reasonable first draft of the code), OR
-- You have answered the investigation questions listed below, OR
-- Your current exploration plan is finished.
+- You have collected enough evidence to answer the `pending_questions` listed below.
+- If there are no `pending_questions`, stop when your current exploration plan is finished.
 
-**Strategy:**
-- Try different actions systematically to understand cause-and-effect.
-- Use `env_reset()` to collect multiple trajectories with different action sequences.
-- Pay attention to objects, their colors, positions, and how they change.
-- Consider whether hidden state (e.g. velocities, counters, modes) exists.
-- If investigation questions are listed below, focus on answering them first.
-- Call `stop_exploration()` once your plan is done.  Do not over-collect.
 """
 
 _EXPLORE_CODE_SECTION = """
@@ -510,6 +518,15 @@ The code-generation system tried to write `predict_dynamics` code but encountere
 errors it could not resolve from existing data alone.  The following questions \
 describe specific aspects of the dynamics that are still uncertain.  Please design \
 your exploration to collect trajectories that answer these questions.
+
+{questions}
+"""
+
+_EXPLORE_SELF_GENERATED_SECTION = """
+**IMPORTANT — Self-generated investigation questions for this exploration round:**
+These questions were generated to guide free exploration and improve understanding \
+of the environment dynamics.  Please design your exploration to collect trajectories \
+that answer these questions.
 
 {questions}
 """
@@ -537,6 +554,7 @@ def build_exploration_prompt(
     explored_qa: List[Dict[str, str]],
     pending_questions: List[str],
     error_frames: List[Dict[str, Any]],
+    questions_from_refine: bool,
 ) -> str:
     """Build the system prompt for the exploration agent."""
     prompt = _EXPLORE_SYSTEM_PROMPT
@@ -549,7 +567,10 @@ def build_exploration_prompt(
 
     if pending_questions:
         qtext = "\n".join(f"- {q}" for q in pending_questions)
-        prompt += _EXPLORE_PENDING_SECTION.format(questions=qtext)
+        if questions_from_refine:
+            prompt += _EXPLORE_PENDING_SECTION.format(questions=qtext)
+        else:
+            prompt += _EXPLORE_SELF_GENERATED_SECTION.format(questions=qtext)
 
     if error_frames:
         from code_refine_graph import format_error_frames_text
@@ -573,9 +594,9 @@ def create_exploration_tools(
     will append converted trajectories to it.
 
     Returns (tools_list, stop_flag) where stop_flag is a dict
-    ``{"stopped": bool}`` mutated by stop_exploration.
+    ``{"stopped": bool, "reason": Optional[str]}`` mutated by tools.
     """
-    stop_flag = {"stopped": False}
+    stop_flag = {"stopped": False, "reason": None}
 
     @tool(description=(
         "Take an action in the environment. "
@@ -585,7 +606,20 @@ def create_exploration_tools(
     def env_step(action: str) -> str:
         """Take an action in the environment and return the new observation."""
         try:
-            return env.step(action)
+            if env.time >= env.max_steps:
+                stop_flag["stopped"] = True
+                stop_flag["reason"] = "max_steps"
+                return (
+                    f"Max steps ({env.max_steps}) reached. "
+                    "Exploration must stop now."
+                )
+            obs = env.step(action)
+            if env.time >= env.max_steps:
+                # Step budget is exhausted after this transition. Signal the outer
+                # stream loop to stop regardless of what the model does next.
+                stop_flag["stopped"] = True
+                stop_flag["reason"] = "max_steps"
+            return obs
         except Exception as e:
             return f"Error: {e}"
 
@@ -614,6 +648,7 @@ def create_exploration_tools(
             converted = convert_env_trajectory(raw_traj)
             collected_trajectories.append(converted)
         stop_flag["stopped"] = True
+        stop_flag["reason"] = "agent_stop"
         return "Exploration stopped.  Your trajectories have been saved."
 
     return [env_step, env_reset, stop_exploration], stop_flag
@@ -627,30 +662,29 @@ _SUMMARIZE_SYSTEM_PROMPT = """\
 You are a scientific assistant.  You have just observed an exploration session \
 where an agent interacted with a grid environment to discover its dynamics.
 
-Your task is to summarise the exploration into structured Q&A pairs.  Each pair \
-should capture one scientific question that was investigated and the answer or \
-finding based on the observations.
+Your task is to answer the \
+provided pending investigation questions, using evidence from the exploration \
+conversation and trajectories.
 
-Focus on concrete, factual findings about the environment's transition dynamics, \
-for example:
-- What happens when a specific action is taken?
-- How do objects move or interact?
-- Are there hidden states, counters, or modes?
-- What are boundary behaviours?
+Output structured Q&A pairs where:
+- Each Q is one pending investigation question (use the same wording).
+- Each A is a concrete, factual answer grounded in observed behavior.
+- Do not add extra questions beyond the pending list.
 """
 
-_SUMMARIZE_WITH_PENDING_SECTION = """
-**The explorer was specifically asked to investigate these questions:**
+_SUMMARIZE_WITH_PENDING_FROM_REFINE_SECTION = """
+**These investigation questions came from the code-generation/refinement stage:**
 {pending_questions}
 
-Please make sure to include answers to these questions in your Q&A pairs.
+Please return Q&A pairs for these questions only.
 """
 
-_SUMMARIZE_CONVERSATION_SECTION = """
-**Full exploration conversation:**
-{conversation}
-"""
+_SUMMARIZE_WITH_PENDING_SELF_GENERATED_SECTION = """
+**These investigation questions were self-generated for this free-exploration round:**
+{pending_questions}
 
+Please return Q&A pairs for these questions only.
+"""
 
 # ============================================================
 # Question Generation Prompt (for free exploration)
@@ -658,15 +692,32 @@ _SUMMARIZE_CONVERSATION_SECTION = """
 
 _GENERATE_QUESTIONS_PROMPT = """\
 You are a scientist planning the next round of exploration in an interactive \
-grid environment.  Your goal is to propose 2-3 specific, actionable scientific \
+deterministic grid world environment.  Your goal is to propose 1 specific, actionable scientific \
 questions that should be investigated to better understand the environment's \
 transition dynamics.
+
+The environment consists of a grid containing cells that can take colors. The
+grid has width GRID_SIZE and height GRID_SIZE (i.e., a GRID_SIZE x GRID_SIZE
+grid). The dynamics are deterministic: given the same state and action, the
+next state is always the same (no randomness).
+
+The valid environment actions are:
+- `click x y` - Click on the cell at location (x, y). For GRID_SIZE, x and y
+  must each be between 0 and GRID_SIZE-1 inclusive.
+- `left` - Press the left arrow key.
+- `right` - Press the right arrow key.
+- `up` - Press the up arrow key.
+- `down` - Press the down arrow key.
+- `noop` - Do nothing and continue to the next step.
+
+Important: `reset` and `stop_exploration` are tools for trajectory management,
+not environment actions in the action space.
 
 {context_section}
 
 Based on what is known so far, either:
-1. Propose 2-3 questions that would be most valuable to investigate next.  \
-Each question should target a specific aspect of the dynamics that is not yet \
+1. Propose exactly 1 question that would be most valuable to investigate next.  \
+The question should target a specific aspect of the dynamics that is not yet \
 well understood.
 2. If the current knowledge and code are already sufficient to fully describe \
 the environment's transition dynamics and no further exploration would provide \
@@ -745,6 +796,36 @@ def create_explore_graph(llm):
         logger.info("ExploreGraph: generating exploration questions")
 
         context_parts: List[str] = []
+
+        # Include the initial observation so question generation can anchor on
+        # the concrete starting state, before proposing exploration targets.
+        try:
+            data_dir = state["data_dir"]
+            env_name = state["env_name"]
+            for subdir in ["tests", "programs", ""]:
+                candidate = os.path.join(data_dir, subdir, f"{env_name}.sexp")
+                if os.path.isfile(candidate):
+                    program_path = candidate
+                    break
+            else:
+                program_path = None
+
+            if program_path:
+                init_env = ExplorationEnvironment(
+                    program_path=program_path,
+                    max_steps=state.get("max_explore_steps", 200),
+                    use_obfuscation=state.get("use_obfuscation", False),
+                )
+                init_env.reset()
+                initial_obs = init_env.get_observation()
+                context_parts.append(
+                    f"**Initial observation:**\n```json\n{initial_obs}\n```"
+                )
+        except Exception as e:
+            logger.warning(
+                "ExploreGraph: failed to fetch initial observation for question generation: %s",
+                e,
+            )
 
         current_code = state.get("current_code")
         if current_code:
@@ -869,6 +950,7 @@ def create_explore_graph(llm):
             explored_qa=state.get("explored_qa", []),
             pending_questions=state.get("pending_questions", []),
             error_frames=state.get("error_frames", []),
+            questions_from_refine=state.get("questions_from_refine", False),
         )
 
         agent = create_agent(
@@ -888,11 +970,25 @@ def create_explore_graph(llm):
         agent_messages: list = []
         try:
             trace_cb = _JsonTraceCallback(state.get("explore_log_dir"))
-            result = agent.invoke(
+            for event in agent.stream(
                 {"messages": [{"role": "user", "content": user_message}]},
-                config={"callbacks": [trace_cb]},
-            )
-            agent_messages = result.get("messages", [])
+                config={
+                    "callbacks": [trace_cb],
+                },
+                stream_mode="values",
+            ):
+                if isinstance(event, dict) and "messages" in event:
+                    agent_messages = event.get("messages", []) or agent_messages
+                if stop_flag["stopped"]:
+                    break
+
+            # If we force-stopped due to budget exhaustion, the current trajectory
+            # may not have been saved via env_reset/stop_exploration yet.
+            if stop_flag.get("reason") == "max_steps":
+                raw_traj = env.get_raw_trajectory()
+                if len(raw_traj) > 1:
+                    collected.append(convert_env_trajectory(raw_traj))
+
             _log_llm_call(
                 state.get("explore_log_dir"),
                 "run_agent",
@@ -903,6 +999,7 @@ def create_explore_graph(llm):
                 {
                     "agent_messages": agent_messages,
                     "num_trajectories": len(collected),
+                    "stop_reason": stop_flag.get("reason"),
                 },
             )
         except Exception as e:
@@ -952,56 +1049,41 @@ def create_explore_graph(llm):
         agent_msgs = state.get("agent_messages") or []
         pending = state.get("pending_questions") or []
 
-        # Build a text representation of the conversation for the summariser
-        conversation_lines: List[str] = []
-        for msg in agent_msgs:
-            # Handle both LangChain message objects and dicts
-            if hasattr(msg, "type"):
-                role = msg.type  # "human", "ai", "tool"
-            elif isinstance(msg, dict):
-                role = msg.get("role", msg.get("type", "unknown"))
-            else:
-                role = "unknown"
-
-            if hasattr(msg, "content"):
-                content = msg.content
-            elif isinstance(msg, dict):
-                content = msg.get("content", "")
-            else:
-                content = str(msg)
-
-            # Truncate very long content (tool results with full state JSON)
-            content_str = str(content)
-            if len(content_str) > 2000:
-                content_str = content_str[:2000] + "... [truncated]"
-
-            conversation_lines.append(f"[{role}] {content_str}")
-
-        conversation_text = "\n".join(conversation_lines)
-
         # Build summarisation prompt
-        prompt = _SUMMARIZE_SYSTEM_PROMPT
+        summarize_system_prompt = _SUMMARIZE_SYSTEM_PROMPT
 
         # pending_questions is always populated (either from refine or from
         # the generate_explore_questions node), so always include the section.
         ptext = "\n".join(f"- {q}" for q in pending)
-        prompt += _SUMMARIZE_WITH_PENDING_SECTION.format(
-            pending_questions=ptext)
-
-        prompt += _SUMMARIZE_CONVERSATION_SECTION.format(
-            conversation=conversation_text)
+        questions_from_refine = state.get("questions_from_refine", False)
+        if questions_from_refine:
+            summarize_system_prompt += _SUMMARIZE_WITH_PENDING_FROM_REFINE_SECTION.format(
+                pending_questions=ptext
+            )
+            summarize_user_prompt = (
+                "Answer the pending investigation questions from the "
+                "code-generation/refinement stage using the exploration "
+                "conversation above. Return structured Q&A pairs for those "
+                "pending questions only."
+            )
+        else:
+            summarize_system_prompt += _SUMMARIZE_WITH_PENDING_SELF_GENERATED_SECTION.format(
+                pending_questions=ptext
+            )
+            summarize_user_prompt = (
+                "Answer the pending self-generated investigation questions "
+                "for this exploration round using the exploration conversation "
+                "above. Return structured Q&A pairs for those pending "
+                "questions only."
+            )
 
         # Use structured output
         try:
             structured_llm = llm.with_structured_output(ExplorationSummary)
-            llm_messages = [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": (
-                    "Based on the exploration conversation above, produce "
-                    "structured Q&A pairs summarising what was learned about "
-                    "the environment dynamics."
-                )},
-            ]
+            llm_messages: List[Any] = [{"role": "system",
+                                        "content": summarize_system_prompt}]
+            llm_messages.extend(agent_msgs)
+            llm_messages.append({"role": "user", "content": summarize_user_prompt})
             trace_cb = _JsonTraceCallback(state.get("explore_log_dir"))
             summary: ExplorationSummary = structured_llm.invoke(
                 llm_messages, config={"callbacks": [trace_cb]})
@@ -1022,7 +1104,8 @@ def create_explore_graph(llm):
                 state.get("explore_log_dir"),
                 "summarize",
                 {
-                    "prompt": prompt,
+                    "prompt": summarize_system_prompt,
+                    "agent_messages": agent_msgs,
                     "pending_questions": pending,
                 },
                 {},

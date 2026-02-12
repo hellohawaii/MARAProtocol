@@ -180,7 +180,8 @@ def _create_graph_nodes(llm):
         os.makedirs(code_refine_dir, exist_ok=True)
 
         was_targeted = bool(state.get("questions_from_refine", False))
-        has_existing_code = state.get("current_code") is not None
+        existing_code = state.get("current_code")
+        has_existing_code = bool(existing_code and str(existing_code).strip())
 
         # Common fields shared by both branches
         common: Dict[str, Any] = {
@@ -206,25 +207,33 @@ def _create_graph_nodes(llm):
             "prior_trajectory_eval": {},
         }
 
-        if was_targeted and has_existing_code:
-            # After targeted exploration: present findings (current code +
-            # new trajectories/Q&A) so the LLM can refine from there.
+        if not has_existing_code:
+            # No prior code: trigger initial generation from scratch.
             refine_input: Dict[str, Any] = {
-                **common,
-                "code": state.get("current_code") or "",
-                "targeted_trajectories": state.get("new_trajectories", []),
-                "from_targeted_exploration": True,
-                "is_first_generation": False,
-            }
-        else:
-            # After free exploration (or first iteration): generate code
-            # from scratch using all trajectories and Q&A knowledge.
-            refine_input = {
                 **common,
                 "code": "",
                 "targeted_trajectories": [],
                 "from_targeted_exploration": False,
                 "is_first_generation": True,
+            }
+        elif was_targeted:
+            # Existing code + targeted exploration: present targeted findings
+            # first so refinement can incorporate new evidence.
+            refine_input = {
+                **common,
+                "code": existing_code,
+                "targeted_trajectories": state.get("new_trajectories", []),
+                "from_targeted_exploration": True,
+                "is_first_generation": False,
+            }
+        else:
+            # Existing code + free exploration: evaluate current code directly.
+            refine_input = {
+                **common,
+                "code": existing_code,
+                "targeted_trajectories": [],
+                "from_targeted_exploration": False,
+                "is_first_generation": False,
             }
 
         refine_result = refine_subgraph.invoke(refine_input)
