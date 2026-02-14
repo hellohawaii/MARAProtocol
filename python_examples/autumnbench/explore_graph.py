@@ -672,8 +672,17 @@ Output structured Q&A pairs where:
 - Do not add extra questions beyond the pending list.
 """
 
+_SUMMARIZE_CODE_SECTION = """
+**Current predict_dynamics code (for reference):**
+```python
+{code}
+```
+"""
+
 _SUMMARIZE_WITH_PENDING_FROM_REFINE_SECTION = """
 **These investigation questions came from the code-generation/refinement stage:**
+The current code could not explain all observed trajectories.  Therefore, the
+code-generation/refinement process raised the following unresolved questions:
 {pending_questions}
 
 Please return Q&A pairs for these questions only.
@@ -681,6 +690,9 @@ Please return Q&A pairs for these questions only.
 
 _SUMMARIZE_WITH_PENDING_SELF_GENERATED_SECTION = """
 **These investigation questions were self-generated for this free-exploration round:**
+The current code can explain previously collected trajectories, but it is still
+unclear whether it also explains the newly collected trajectories from this
+round. You may refer to the current code for context. Use the latest exploration evidence to answer the following questions:
 {pending_questions}
 
 Please return Q&A pairs for these questions only.
@@ -1048,9 +1060,14 @@ def create_explore_graph(llm):
 
         agent_msgs = state.get("agent_messages") or []
         pending = state.get("pending_questions") or []
+        current_code = state.get("current_code")
 
         # Build summarisation prompt
         summarize_system_prompt = _SUMMARIZE_SYSTEM_PROMPT
+        if current_code:
+            summarize_system_prompt += _SUMMARIZE_CODE_SECTION.format(
+                code=current_code
+            )
 
         # pending_questions is always populated (either from refine or from
         # the generate_explore_questions node), so always include the section.
