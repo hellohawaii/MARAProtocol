@@ -17,10 +17,14 @@ import io
 import json
 import logging
 import multiprocessing
+import os
+import pickle
 import re
 import signal
 import sys
+import time
 import traceback
+from pathlib import Path
 from queue import Empty as QueueEmpty
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict
 
@@ -28,6 +32,321 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langgraph.graph import END, StateGraph
 
 logger = logging.getLogger(__name__)
+
+try:
+    from PIL import Image, ImageDraw
+except ImportError:  # pragma: no cover
+    Image = None
+    ImageDraw = None
+
+
+def _to_jsonable(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {str(k): _to_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_jsonable(v) for v in obj]
+    if isinstance(obj, tuple):
+        return [_to_jsonable(v) for v in obj]
+    if isinstance(obj, BaseMessage):
+        return {
+            "type": getattr(obj, "type", obj.__class__.__name__),
+            "content": getattr(obj, "content", ""),
+        }
+    return obj
+
+
+def _write_json(path: str, payload: Dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(_to_jsonable(payload), f, ensure_ascii=False, indent=2)
+
+
+def _write_text(path: str, text: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+_BASIC_COLORS = {
+    "black": (0, 0, 0),
+    "white": (255, 255, 255),
+    "red": (220, 20, 60),
+    "blue": (65, 105, 225),
+    "green": (50, 205, 50),
+    "yellow": (255, 215, 0),
+    "orange": (255, 140, 0),
+    "purple": (138, 43, 226),
+    "pink": (255, 105, 180),
+    "grey": (128, 128, 128),
+    "gray": (128, 128, 128),
+    "slategrey": (112, 128, 144),
+    "slategray": (112, 128, 144),
+}
+
+
+def _color_to_rgb(color_name: Any) -> tuple:
+    if isinstance(color_name, str):
+        c = color_name.strip().lower()
+        if c in _BASIC_COLORS:
+            return _BASIC_COLORS[c]
+        if c.startswith("#") and len(c) == 7:
+            try:
+                return (int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16))
+            except Exception:
+                pass
+    seed = abs(hash(str(color_name))) % (256 ** 3)
+    return ((seed >> 16) & 255, (seed >> 8) & 255, seed & 255)
+
+
+def _render_grid_png(grid: List[List[str]], out_path: str, cell_size: int = 24) -> None:
+    if Image is None or ImageDraw is None:
+        return
+    h = len(grid)
+    w = len(grid[0]) if h else 0
+    if h == 0 or w == 0:
+        return
+    img = Image.new("RGB", (w * cell_size, h * cell_size), "black")
+    draw = ImageDraw.Draw(img)
+    for y, row in enumerate(grid):
+        for x, color_name in enumerate(row):
+            rgb = _color_to_rgb(color_name)
+            x0, y0 = x * cell_size, y * cell_size
+            x1, y1 = x0 + cell_size - 1, y0 + cell_size - 1
+            draw.rectangle([x0, y0, x1, y1], fill=rgb)
+            draw.rectangle([x0, y0, x1, y1], outline=(40, 40, 40))
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    img.save(out_path)
+
+
+def _log_refine_llm_call(state: Dict[str, Any], node_name: str, llm_input: Any,
+                         llm_output: Any, error: Optional[str] = None) -> None:
+    log_dir = state.get("code_refine_log_dir")
+    if not log_dir:
+        return
+    ts = int(time.time() * 1000)
+    out_path = os.path.join(log_dir, "llm_calls", f"{ts}_{node_name}.json")
+    _write_json(out_path, {
+        "node": node_name,
+        "main_loop_index": state.get("main_loop_index"),
+        "refine_iteration": state.get("refine_iteration"),
+        "llm_input": llm_input,
+        "llm_output": llm_output,
+        "error": error,
+    })
+
+
+def _persist_refine_eval_artifacts(
+    state: Dict[str, Any],
+    results_list: List[Dict[str, Any]],
+    accuracy: float,
+    total_correct: int,
+    total_frames: int,
+    prior_eval: Optional[Dict[str, Any]] = None,
+) -> int:
+    log_dir = state.get("code_refine_log_dir")
+    curr_eval_idx = int(state.get("refine_eval_index", 0))
+    if not log_dir:
+        return curr_eval_idx + 1
+
+    refine_dir = os.path.join(log_dir, f"refine_loop_{curr_eval_idx:03d}")
+    os.makedirs(refine_dir, exist_ok=True)
+
+    _write_json(os.path.join(refine_dir, "overall_metrics.json"), {
+        "main_loop_index": state.get("main_loop_index"),
+        "refine_loop_index": curr_eval_idx,
+        "accuracy": accuracy,
+        "total_correct": total_correct,
+        "total_frames": total_frames,
+        "num_trajectories": len(results_list),
+        "prior_trajectory_eval": prior_eval or {},
+    })
+    _write_text(os.path.join(refine_dir, "predict_dynamics.py"), state.get("code") or "")
+
+    for traj_idx, traj_result in enumerate(results_list):
+        traj_dir = os.path.join(refine_dir, f"trajectory_{traj_idx:03d}")
+        os.makedirs(traj_dir, exist_ok=True)
+        _write_json(os.path.join(traj_dir, "metrics.json"), {
+            "accuracy": traj_result.get("accuracy", 0.0),
+            "correct": traj_result.get("correct", 0),
+            "total": traj_result.get("total", 0),
+        })
+        _write_text(os.path.join(traj_dir, "predict_dynamics.py"), state.get("code") or "")
+
+        first_error_step = None
+        for step in traj_result.get("steps", []):
+            if not step.get("is_correct", False):
+                first_error_step = step
+                break
+        if first_error_step is None:
+            continue
+
+        _write_json(os.path.join(traj_dir, "first_error_frame.json"), {
+            "step_idx": first_error_step.get("step_idx"),
+            "input_visible_state": first_error_step.get("input_visible_state"),
+            "action": first_error_step.get("action"),
+            "predicted_visible_state": first_error_step.get("predicted_visible_state"),
+            "ground_truth_next_state": first_error_step.get("ground_truth_next_state"),
+            "final_hidden_state": first_error_step.get("final_hidden_state"),
+        })
+
+        pred_grid = _state_to_grid(first_error_step.get("predicted_visible_state"))
+        gt_grid = _state_to_grid(first_error_step.get("ground_truth_next_state"))
+        if pred_grid is not None:
+            _render_grid_png(pred_grid, os.path.join(traj_dir, "predicted_next.png"))
+        if gt_grid is not None:
+            _render_grid_png(gt_grid, os.path.join(traj_dir, "ground_truth_next.png"))
+    return curr_eval_idx + 1
+
+
+def _persist_refine_eval_error(state: Dict[str, Any], error_message: str,
+                               prior_eval: Optional[Dict[str, Any]] = None) -> int:
+    log_dir = state.get("code_refine_log_dir")
+    curr_eval_idx = int(state.get("refine_eval_index", 0))
+    if not log_dir:
+        return curr_eval_idx + 1
+    refine_dir = os.path.join(log_dir, f"refine_loop_{curr_eval_idx:03d}")
+    os.makedirs(refine_dir, exist_ok=True)
+    _write_json(os.path.join(refine_dir, "execution_error.json"), {
+        "main_loop_index": state.get("main_loop_index"),
+        "refine_loop_index": curr_eval_idx,
+        "error": error_message,
+        "prior_trajectory_eval": prior_eval or {},
+    })
+    _write_text(os.path.join(refine_dir, "predict_dynamics.py"), state.get("code") or "")
+    return curr_eval_idx + 1
+
+
+def _extract_trajectories(payload: Any) -> List[Dict[str, Any]]:
+    if payload is None:
+        return []
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        if isinstance(payload.get("trajectories"), list):
+            return payload["trajectories"]
+        if isinstance(payload.get("trajectory"), dict):
+            return [payload["trajectory"]]
+    return []
+
+
+def _load_trajectory_file(path: str) -> List[Dict[str, Any]]:
+    if path.endswith(".pkl"):
+        with open(path, "rb") as f:
+            payload = pickle.load(f)
+    elif path.endswith(".json"):
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    else:
+        return []
+    return _extract_trajectories(payload)
+
+
+def _candidate_raw_trajectory_dirs() -> List[str]:
+    workspace_root = Path(__file__).resolve().parents[3]
+    return [
+        str(workspace_root / "AutumnWeb" / "backend" / "trajectory_cache"),
+        str(workspace_root / "AutumnWeb" / "backend" / "trajectories_cache"),
+    ]
+
+
+def _obfuscated_trajectory_dir() -> str:
+    workspace_root = Path(__file__).resolve().parents[3]
+    return str(
+        workspace_root
+        / "MARAProtocol"
+        / "python_examples"
+        / "autumnbench"
+        / "example_benchmark"
+        / "trajectories_obfuscated"
+    )
+
+
+def _looks_like_env_file(filename: str, env_name: str) -> bool:
+    if filename.startswith(env_name):
+        return True
+    return f"{env_name}(" in filename or f"{env_name}_" in filename
+
+
+def _load_prior_trajectories_for_env(
+    env_name: str,
+    use_obfuscation: bool,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if use_obfuscation:
+        directory = _obfuscated_trajectory_dir()
+        source_type = "obfuscated"
+    else:
+        directory = ""
+        source_type = "raw"
+        for c in _candidate_raw_trajectory_dirs():
+            if os.path.isdir(c):
+                directory = c
+                break
+
+    meta: Dict[str, Any] = {
+        "source_type": source_type,
+        "directory": directory,
+        "env_name": env_name,
+    }
+    if not directory or not os.path.isdir(directory):
+        meta["status"] = "missing_directory"
+        return [], meta
+
+    selected_files: List[str] = []
+    for name in sorted(os.listdir(directory)):
+        if not (name.endswith(".pkl") or name.endswith(".json")):
+            continue
+        if _looks_like_env_file(name, env_name):
+            selected_files.append(os.path.join(directory, name))
+
+    trajectories: List[Dict[str, Any]] = []
+    for fp in selected_files:
+        try:
+            trajectories.extend(_load_trajectory_file(fp))
+        except Exception as e:
+            logger.warning("Failed to load prior trajectory file %s: %s", fp, e)
+
+    meta["status"] = "ok"
+    meta["matched_files"] = selected_files
+    meta["num_loaded_trajectories"] = len(trajectories)
+    return trajectories, meta
+
+
+def _evaluate_on_prior_trajectories(
+    code: str,
+    env_name: str,
+    use_obfuscation: bool,
+) -> Dict[str, Any]:
+    trajectories, meta = _load_prior_trajectories_for_env(
+        env_name=env_name,
+        use_obfuscation=use_obfuscation,
+    )
+    if not trajectories:
+        return {
+            **meta,
+            "evaluated": False,
+            "reason": "no_trajectories",
+        }
+    result = execute_code_on_trajectories(code, trajectories)
+    if not result.get("success"):
+        return {
+            **meta,
+            "evaluated": True,
+            "success": False,
+            "error": result.get("error_info", {}).get("error_message", "Unknown error"),
+        }
+    results_list = result.get("results", [])
+    total_correct = sum(r.get("correct", 0) for r in results_list)
+    total_frames = sum(r.get("total", 0) for r in results_list)
+    accuracy = total_correct / total_frames if total_frames > 0 else 1.0
+    return {
+        **meta,
+        "evaluated": True,
+        "success": True,
+        "accuracy": accuracy,
+        "total_correct": total_correct,
+        "total_frames": total_frames,
+        "num_trajectories": len(results_list),
+    }
 
 # ============================================================
 # Prompt Constants
@@ -536,6 +855,12 @@ class RefineState(TypedDict):
     is_first_generation: bool                # True if no code exists yet
     new_qa: list                             # New Q&A pairs from latest exploration (highlighted)
     all_qa: list                             # All historical Q&A pairs (background knowledge)
+    code_refine_log_dir: str                 # Log directory for this main-loop code_refine
+    main_loop_index: int                     # Main loop index from baseline graph
+    refine_eval_index: int                   # Index for each execute_and_evaluate pass
+    env_name: str                            # Environment id (e.g., 7XF97)
+    use_obfuscation: bool                    # Whether current run uses obfuscated observations
+    prior_trajectory_eval: dict              # Metrics on historical trajectories
 
 
 # ============================================================
@@ -571,6 +896,12 @@ def create_refine_graph(llm):
         response = llm.invoke(history)
         ai_msg = AIMessage(content=response.content)
         history.append(ai_msg)
+        _log_refine_llm_call(
+            state=state,
+            node_name="initial_generate",
+            llm_input={"history": history[:-1]},
+            llm_output={"response": response.content},
+        )
 
         extracted = extract_python_code(response.content)
         return {
@@ -609,8 +940,11 @@ def create_refine_graph(llm):
         code = state["code"]
         trajs = state["all_trajectories"]
         logger.info("RefineGraph: executing code on %d trajectories", len(trajs))
+        prior_eval: Dict[str, Any] = {}
 
         if not code or not code.strip():
+            next_eval_idx = _persist_refine_eval_error(
+                state, "No code to execute.", prior_eval=prior_eval)
             return {
                 "accuracy": 0.0,
                 "total_correct": 0,
@@ -619,14 +953,35 @@ def create_refine_graph(llm):
                 "per_trajectory_results": [],
                 "first_error_frames": [],
                 "code_perfect": False,
+                "refine_eval_index": next_eval_idx,
             }
 
         result = execute_code_on_trajectories(code, trajs)
+        prior_eval = _evaluate_on_prior_trajectories(
+            code=code,
+            env_name=state.get("env_name", ""),
+            use_obfuscation=bool(state.get("use_obfuscation", False)),
+        )
+        if prior_eval.get("evaluated") and prior_eval.get("success"):
+            logger.info(
+                "RefineGraph: prior trajectories accuracy = %.1f%% (%d/%d) from %s",
+                prior_eval["accuracy"] * 100,
+                prior_eval["total_correct"],
+                prior_eval["total_frames"],
+                prior_eval.get("directory"),
+            )
+        else:
+            logger.info(
+                "RefineGraph: prior trajectories eval skipped/failed (%s)",
+                prior_eval.get("reason") or prior_eval.get("error") or prior_eval.get("status"),
+            )
 
         if not result["success"]:
             error_info = result.get("error_info", {})
             error_msg = error_info.get("error_message", "Unknown error")
             logger.warning("RefineGraph: execution failed — %s", error_msg)
+            next_eval_idx = _persist_refine_eval_error(
+                state, error_msg, prior_eval=prior_eval)
             return {
                 "accuracy": 0.0,
                 "total_correct": 0,
@@ -635,6 +990,7 @@ def create_refine_graph(llm):
                 "per_trajectory_results": [],
                 "first_error_frames": [],
                 "code_perfect": False,
+                "refine_eval_index": next_eval_idx,
             }
 
         results_list = result["results"]
@@ -648,6 +1004,14 @@ def create_refine_graph(llm):
             "RefineGraph: accuracy = %.1f%% (%d/%d)",
             accuracy * 100, total_correct, total_frames,
         )
+        next_eval_idx = _persist_refine_eval_artifacts(
+            state=state,
+            results_list=results_list,
+            accuracy=accuracy,
+            total_correct=total_correct,
+            total_frames=total_frames,
+            prior_eval=prior_eval,
+        )
 
         return {
             "accuracy": accuracy,
@@ -657,6 +1021,8 @@ def create_refine_graph(llm):
             "per_trajectory_results": results_list,
             "first_error_frames": first_errors,
             "code_perfect": accuracy >= 1.0,
+            "refine_eval_index": next_eval_idx,
+            "prior_trajectory_eval": prior_eval,
         }
 
     # ----------------------------------------------------------
@@ -691,6 +1057,12 @@ def create_refine_graph(llm):
         response = llm.invoke(history)
         ai_msg = AIMessage(content=response.content)
         history.append(ai_msg)
+        _log_refine_llm_call(
+            state=state,
+            node_name="refine_code",
+            llm_input={"history": history[:-1]},
+            llm_output={"response": response.content},
+        )
 
         extracted = extract_python_code(response.content)
 
@@ -716,6 +1088,12 @@ def create_refine_graph(llm):
 
         response = llm.invoke(history)
         history.append(AIMessage(content=response.content))
+        _log_refine_llm_call(
+            state=state,
+            node_name="generate_questions",
+            llm_input={"history": history[:-1]},
+            llm_output={"response": response.content},
+        )
 
         # Parse Q: lines
         questions = []

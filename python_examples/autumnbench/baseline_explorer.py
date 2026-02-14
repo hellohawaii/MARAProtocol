@@ -18,6 +18,7 @@ Across iterations the agent maintains:
 import logging
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
 
@@ -62,6 +63,22 @@ class MainState(TypedDict):
     data_dir: str
     llm_model: str
     use_obfuscation: bool               # Whether to obfuscate object-type names
+    experiments_root_dir: str
+    experiment_run_dir: str
+    current_loop_dir: str
+
+
+def _build_experiment_dirs(env_name: str) -> Dict[str, str]:
+    """Create experiment root/run directories for this execution."""
+    experiments_root = os.path.join(str(_REPO_ROOT), "MARAProtocol", "experiments")
+    os.makedirs(experiments_root, exist_ok=True)
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = os.path.join(experiments_root, f"{env_name}_{run_id}")
+    os.makedirs(run_dir, exist_ok=True)
+    return {
+        "experiments_root_dir": experiments_root,
+        "experiment_run_dir": run_dir,
+    }
 
 
 # ============================================================
@@ -87,6 +104,13 @@ def _create_graph_nodes(llm):
         logger.info(
             "=== Exploration (iteration %d) ===", state["iteration"],
         )
+        loop_idx = state["iteration"]
+        loop_dir = os.path.join(
+            state["experiment_run_dir"], f"loop_{loop_idx:03d}")
+        explore_dir = os.path.join(loop_dir, "explore")
+        code_refine_dir = os.path.join(loop_dir, "code_refine")
+        os.makedirs(explore_dir, exist_ok=True)
+        os.makedirs(code_refine_dir, exist_ok=True)
 
         explore_input: Dict[str, Any] = {
             "current_code": state.get("current_code"),
@@ -102,6 +126,7 @@ def _create_graph_nodes(llm):
             "new_qa": [],
             "questions_from_refine": False,
             "exploration_sufficient": False,
+            "explore_log_dir": explore_dir,
         }
 
         explore_result = explore_subgraph.invoke(explore_input)
@@ -139,6 +164,7 @@ def _create_graph_nodes(llm):
             "pending_questions": [],  # Clear — they've been addressed
             "questions_from_refine": questions_from_refine,
             "exploration_sufficient": exploration_sufficient,
+            "current_loop_dir": loop_dir,
         }
 
     # ----------------------------------------------------------
@@ -148,9 +174,14 @@ def _create_graph_nodes(llm):
         logger.info(
             "=== Code refinement phase (iteration %d) ===", state["iteration"]
         )
+        loop_dir = state.get("current_loop_dir") or os.path.join(
+            state["experiment_run_dir"], f"loop_{state['iteration']:03d}")
+        code_refine_dir = os.path.join(loop_dir, "code_refine")
+        os.makedirs(code_refine_dir, exist_ok=True)
 
         was_targeted = bool(state.get("questions_from_refine", False))
-        has_existing_code = state.get("current_code") is not None
+        existing_code = state.get("current_code")
+        has_existing_code = bool(existing_code and str(existing_code).strip())
 
         # Common fields shared by both branches
         common: Dict[str, Any] = {
@@ -168,27 +199,41 @@ def _create_graph_nodes(llm):
             "code_perfect": False,
             "new_qa": state.get("new_qa", []),
             "all_qa": state.get("explored_qa", []),
+            "code_refine_log_dir": code_refine_dir,
+            "main_loop_index": state["iteration"],
+            "refine_eval_index": 0,
+            "env_name": state["env_name"],
+            "use_obfuscation": state.get("use_obfuscation", False),
+            "prior_trajectory_eval": {},
         }
 
-        if was_targeted and has_existing_code:
-            # After targeted exploration: present findings (current code +
-            # new trajectories/Q&A) so the LLM can refine from there.
+        if not has_existing_code:
+            # No prior code: trigger initial generation from scratch.
             refine_input: Dict[str, Any] = {
-                **common,
-                "code": state.get("current_code") or "",
-                "targeted_trajectories": state.get("new_trajectories", []),
-                "from_targeted_exploration": True,
-                "is_first_generation": False,
-            }
-        else:
-            # After free exploration (or first iteration): generate code
-            # from scratch using all trajectories and Q&A knowledge.
-            refine_input = {
                 **common,
                 "code": "",
                 "targeted_trajectories": [],
                 "from_targeted_exploration": False,
                 "is_first_generation": True,
+            }
+        elif was_targeted:
+            # Existing code + targeted exploration: present targeted findings
+            # first so refinement can incorporate new evidence.
+            refine_input = {
+                **common,
+                "code": existing_code,
+                "targeted_trajectories": state.get("new_trajectories", []),
+                "from_targeted_exploration": True,
+                "is_first_generation": False,
+            }
+        else:
+            # Existing code + free exploration: evaluate current code directly.
+            refine_input = {
+                **common,
+                "code": existing_code,
+                "targeted_trajectories": [],
+                "from_targeted_exploration": False,
+                "is_first_generation": False,
             }
 
         refine_result = refine_subgraph.invoke(refine_input)
@@ -199,6 +244,7 @@ def _create_graph_nodes(llm):
             "pending_questions": refine_result.get("questions", []),
             "error_frames_for_explorer": refine_result.get("first_error_frames", []),
             "iteration": state["iteration"] + 1,
+            "current_loop_dir": loop_dir,
         }
 
     return explore_node, refine_code_node
@@ -305,6 +351,7 @@ def run(
 
     llm = get_llm(model=llm_model)
     graph = create_main_graph(llm)
+    exp_dirs = _build_experiment_dirs(env_name)
 
     initial_state: Dict[str, Any] = {
         "current_code": None,
@@ -325,6 +372,9 @@ def run(
         "llm_model": llm_model,
         "use_obfuscation": use_obfuscation,
         "questions_from_refine": False,
+        "experiments_root_dir": exp_dirs["experiments_root_dir"],
+        "experiment_run_dir": exp_dirs["experiment_run_dir"],
+        "current_loop_dir": "",
     }
 
     final_state = graph.invoke(initial_state)
@@ -335,9 +385,11 @@ def run(
         "explored_qa": final_state.get("explored_qa", []),
         "code_perfect": final_state.get("code_perfect", False),
         "iterations": final_state.get("iteration", 0),
+        "experiment_run_dir": exp_dirs["experiment_run_dir"],
     }
 
     logger.info("=== Baseline Explorer finished ===")
+    logger.info("Experiment logs written to: %s", exp_dirs["experiment_run_dir"])
     logger.info("Iterations: %d", result["iterations"])
     logger.info("Code perfect: %s", result["code_perfect"])
     logger.info("Trajectories collected: %d", len(result["trajectory_library"]))
@@ -371,8 +423,8 @@ if __name__ == "__main__":
     parser.add_argument("--llm-model", default="google/gemini-2.5-pro")
     parser.add_argument(
         "--use-obfuscation",
-        action="store_true",
-        default=False,
+        type=bool,
+        default=True,
         help="Obfuscate object-type names using obfuscation_mapping.json",
     )
     parser.add_argument(
