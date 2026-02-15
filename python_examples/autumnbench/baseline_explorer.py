@@ -48,7 +48,7 @@ class MainState(TypedDict):
     current_code: Optional[str]
     trajectory_library: list            # List of trajectories in executor format
     new_trajectories: list              # Trajectories from the latest exploration
-    explored_qa: list                   # List[dict] with {"question": str, "answer": str}
+    explored_qa: list                   # List[dict] with QA + confidence metadata
     new_qa: list                        # Q&A pairs from the latest exploration round
     pending_questions: list             # Questions from refine LLM for explorer (List[str])
     error_frames_for_explorer: list     # Mispredicted frames for explorer context
@@ -205,6 +205,7 @@ def _create_graph_nodes(llm):
             "env_name": state["env_name"],
             "use_obfuscation": state.get("use_obfuscation", False),
             "prior_trajectory_eval": {},
+            "eval_history_this_round": [],
         }
 
         if not has_existing_code:
@@ -243,6 +244,7 @@ def _create_graph_nodes(llm):
             "code_perfect": refine_result["code_perfect"],
             "pending_questions": refine_result.get("questions", []),
             "error_frames_for_explorer": refine_result.get("first_error_frames", []),
+            "explored_qa": refine_result.get("all_qa", state.get("explored_qa", [])),
             "iteration": state["iteration"] + 1,
             "current_loop_dir": loop_dir,
         }

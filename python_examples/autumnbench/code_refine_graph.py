@@ -13,6 +13,7 @@ detect regressions and track progress.
 
 import copy
 import contextlib
+import hashlib
 import io
 import json
 import logging
@@ -30,6 +31,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -476,6 +478,48 @@ refine the code.  The code will be re-evaluated on ALL trajectories \
 (including the newly collected ones).
 """
 
+QA_CONFIDENCE_SYSTEM_PROMPT = """\
+You are evaluating the reliability of scientific Q&A knowledge used for dynamics modeling.
+
+You will receive:
+1) The current code and latest evaluation result.
+2) Evaluation history from all refine loops in this main iteration.
+3) A list of Q&A items with stable question_id fields.
+
+For each question_id, output:
+- score in [0, 1], where 1 means highly likely correct and 0 means highly likely incorrect.
+
+Requirements:
+- Be conservative and evidence-based.
+- Use the full evaluation history, not only the latest result.
+- Do not invent question_id values.
+- Only output entries for question_id values where you have enough evidence to judge correctness.
+"""
+
+QA_CONFIDENCE_USER_PROMPT = """\
+Current code:
+```python
+{code}
+```
+
+Current evaluation:
+- accuracy: {accuracy:.4f} ({correct}/{total})
+- first_error_frames:
+{error_frames_text}
+
+Evaluation history in this main loop:
+{eval_history_text}
+
+Q&A knowledge to score:
+{qa_text}
+
+Return one rating for each question_id above.
+"""
+
+
+_QA_CONFIDENCE_DECAY = 0.995
+_QA_CONFIDENCE_WEIGHT = 2.0
+
 
 # ============================================================
 # Code Execution Utilities (adapted from AutumnLab code_executor.py)
@@ -825,11 +869,114 @@ def format_qa_text(qa_list: List[Dict[str, Any]], label: str = "Knowledge") -> s
     if not qa_list:
         return ""
     parts: List[str] = [f"\n**{label} from exploration (Q&A):**"]
+    parts.append(
+        "(Each QA includes a stable `question_id` used only for identity tracking "
+        "across iterations.)"
+    )
+    parts.append(
+        "(`confidence` is in [0,1]. Higher means the QA is more reliable; "
+        "0 means the QA is very likely incorrect and should generally not be relied on.)"
+    )
     for i, qa in enumerate(qa_list, 1):
-        parts.append(f"Q{i}: {qa.get('question', '?')}")
-        parts.append(f"A{i}: {qa.get('answer', '?')}")
+        conf = qa.get("confidence")
+        conf_text = f" [confidence={float(conf):.3f}]" if isinstance(conf, (int, float)) else ""
+        question_id = qa.get("question_id", qa.get("qa_id", f"question_{i}"))
+        parts.append(f"Q{i} [question_id={question_id}]: {qa.get('question', '?')}")
+        parts.append(f"A{i}{conf_text}: {qa.get('answer', '?')}")
         parts.append("")
     return "\n".join(parts) + "\n"
+
+
+def _normalize_qa_entry(qa: Dict[str, Any], idx: int) -> Dict[str, Any]:
+    question = str(qa.get("question", "")).strip()
+    answer = str(qa.get("answer", "")).strip()
+    question_id = qa.get("question_id", qa.get("qa_id"))
+    if not question_id:
+        digest = hashlib.sha1(f"{question}|{answer}|{idx}".encode("utf-8")).hexdigest()[:12]
+        question_id = f"question_{digest}"
+
+    alpha = float(qa.get("alpha", 1.0))
+    beta = float(qa.get("beta", 1.0))
+    conf = qa.get("confidence")
+    if not isinstance(conf, (int, float)):
+        conf = alpha / (alpha + beta) if (alpha + beta) > 0 else 0.5
+
+    history = qa.get("confidence_history")
+    if not isinstance(history, list):
+        history = []
+
+    return {
+        **qa,
+        "question_id": str(question_id),
+        "question": question,
+        "answer": answer,
+        "alpha": alpha,
+        "beta": beta,
+        "confidence": float(conf),
+        "confidence_history": history,
+    }
+
+
+def _normalize_qa_list(qa_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [_normalize_qa_entry(qa, idx) for idx, qa in enumerate(qa_list)]
+
+
+def _build_eval_history_entry(state: Dict[str, Any], status: str) -> Dict[str, Any]:
+    code = state.get("code") or ""
+    return {
+        "refine_iteration": int(state.get("refine_iteration", 0)),
+        "refine_eval_index": int(state.get("refine_eval_index", 0)),
+        "status": status,
+        "code": code,
+    }
+
+
+def _format_eval_history_text(eval_history: List[Dict[str, Any]]) -> str:
+    if not eval_history:
+        return "(none)"
+    parts: List[str] = []
+    for row in eval_history:
+        parts.append(
+            "=== Eval iter={iter_}, eval={eval_}, status={status} ===".format(
+                iter_=row.get("refine_iteration", "?"),
+                eval_=row.get("refine_eval_index", "?"),
+                status=row.get("status", "?"),
+            )
+        )
+        parts.append("Code:")
+        parts.append("```python")
+        parts.append(str(row.get("code", "")))
+        parts.append("```")
+        if row.get("status") == "success":
+            parts.append("Execution result:")
+            parts.append(
+                "- accuracy={acc:.4f} ({c}/{t})".format(
+                    acc=float(row.get("accuracy", 0.0)),
+                    c=int(row.get("total_correct", 0)),
+                    t=int(row.get("total_frames", 0)),
+                )
+            )
+            parts.append("- first_error_frames:")
+            parts.append(str(row.get("first_error_frames_text", "(none)")))
+        else:
+            parts.append("Execution result:")
+            parts.append("- execution_error:")
+            parts.append(str(row.get("error", "unknown")))
+        parts.append("")
+    return "\n".join(parts)
+
+
+class QAConfidenceRating(BaseModel):
+    question_id: str = Field(description="Stable QA identifier")
+    score: float = Field(ge=0.0, le=1.0, description="Correctness confidence score in [0,1]")
+    rationale: str = Field(default="", description="Short reason")
+
+
+class QAConfidenceRatings(BaseModel):
+    ratings: List[QAConfidenceRating] = Field(
+        default_factory=list,
+        description="Confidence ratings for QA entries",
+    )
 
 
 # ============================================================
@@ -861,6 +1008,7 @@ class RefineState(TypedDict):
     env_name: str                            # Environment id (e.g., 7XF97)
     use_obfuscation: bool                    # Whether current run uses obfuscated observations
     prior_trajectory_eval: dict              # Metrics on historical trajectories
+    eval_history_this_round: list            # All execute/evaluate outcomes in this main-loop round
 
 
 # ============================================================
@@ -941,10 +1089,14 @@ def create_refine_graph(llm):
         trajs = state["all_trajectories"]
         logger.info("RefineGraph: executing code on %d trajectories", len(trajs))
         prior_eval: Dict[str, Any] = {}
+        eval_history = list(state.get("eval_history_this_round") or [])
 
         if not code or not code.strip():
             next_eval_idx = _persist_refine_eval_error(
                 state, "No code to execute.", prior_eval=prior_eval)
+            history_entry = _build_eval_history_entry(state, status="execution_error")
+            history_entry["error"] = "No code to execute."
+            eval_history.append(history_entry)
             return {
                 "accuracy": 0.0,
                 "total_correct": 0,
@@ -954,6 +1106,7 @@ def create_refine_graph(llm):
                 "first_error_frames": [],
                 "code_perfect": False,
                 "refine_eval_index": next_eval_idx,
+                "eval_history_this_round": eval_history,
             }
 
         result = execute_code_on_trajectories(code, trajs)
@@ -982,6 +1135,9 @@ def create_refine_graph(llm):
             logger.warning("RefineGraph: execution failed — %s", error_msg)
             next_eval_idx = _persist_refine_eval_error(
                 state, error_msg, prior_eval=prior_eval)
+            history_entry = _build_eval_history_entry(state, status="execution_error")
+            history_entry["error"] = error_msg
+            eval_history.append(history_entry)
             return {
                 "accuracy": 0.0,
                 "total_correct": 0,
@@ -991,6 +1147,7 @@ def create_refine_graph(llm):
                 "first_error_frames": [],
                 "code_perfect": False,
                 "refine_eval_index": next_eval_idx,
+                "eval_history_this_round": eval_history,
             }
 
         results_list = result["results"]
@@ -1012,6 +1169,14 @@ def create_refine_graph(llm):
             total_frames=total_frames,
             prior_eval=prior_eval,
         )
+        history_entry = _build_eval_history_entry(state, status="success")
+        history_entry.update({
+            "accuracy": accuracy,
+            "total_correct": total_correct,
+            "total_frames": total_frames,
+            "first_error_frames_text": format_error_frames_text(first_errors),
+        })
+        eval_history.append(history_entry)
 
         return {
             "accuracy": accuracy,
@@ -1023,7 +1188,93 @@ def create_refine_graph(llm):
             "code_perfect": accuracy >= 1.0,
             "refine_eval_index": next_eval_idx,
             "prior_trajectory_eval": prior_eval,
+            "eval_history_this_round": eval_history,
         }
+
+    # ----------------------------------------------------------
+    # Node: score QA reliability and update confidence state
+    # ----------------------------------------------------------
+    def score_qa_confidence_node(state: RefineState) -> dict:
+        qa_list = _normalize_qa_list(list(state.get("all_qa") or []))
+        if not qa_list:
+            return {"all_qa": qa_list}
+
+        if state.get("execution_error"):
+            logger.info("RefineGraph: execution_error present, skip QA scoring")
+            return {"all_qa": qa_list}
+
+        code = state.get("code") or ""
+        error_text = format_error_frames_text(state.get("first_error_frames") or [])
+        qa_text = format_qa_text(qa_list, label="Q&A memory")
+        eval_history_text = _format_eval_history_text(
+            list(state.get("eval_history_this_round") or [])
+        )
+        llm_messages: List[Any] = [
+            {"role": "system", "content": QA_CONFIDENCE_SYSTEM_PROMPT},
+            {"role": "user", "content": QA_CONFIDENCE_USER_PROMPT.format(
+                code=code,
+                accuracy=float(state.get("accuracy", 0.0)),
+                correct=int(state.get("total_correct", 0)),
+                total=int(state.get("total_frames", 0)),
+                error_frames_text=error_text,
+                eval_history_text=eval_history_text,
+                qa_text=qa_text,
+            )},
+        ]
+
+        ratings_map: Dict[str, QAConfidenceRating] = {}
+        try:
+            structured_llm = llm.with_structured_output(QAConfidenceRatings)
+            scored: QAConfidenceRatings = structured_llm.invoke(llm_messages)
+            for rating in scored.ratings:
+                ratings_map[rating.question_id] = rating
+            _log_refine_llm_call(
+                state=state,
+                node_name="score_qa_confidence",
+                llm_input={"messages": llm_messages},
+                llm_output={"ratings": [
+                    r.model_dump() if hasattr(r, "model_dump") else r.dict()
+                    for r in scored.ratings
+                ]},
+            )
+        except Exception as e:
+            logger.warning("RefineGraph: QA confidence scoring failed: %s", e)
+            _log_refine_llm_call(
+                state=state,
+                node_name="score_qa_confidence",
+                llm_input={"messages": llm_messages},
+                llm_output={},
+                error=str(e),
+            )
+            return {"all_qa": qa_list}
+
+        updated_qas: List[Dict[str, Any]] = []
+        for qa in qa_list:
+            rating = ratings_map.get(qa["question_id"])
+            if not rating:
+                updated_qas.append(qa)
+                continue
+
+            score = max(0.0, min(1.0, float(rating.score)))
+            alpha = _QA_CONFIDENCE_DECAY * float(qa.get("alpha", 1.0)) + _QA_CONFIDENCE_WEIGHT * score
+            beta = _QA_CONFIDENCE_DECAY * float(qa.get("beta", 1.0)) + _QA_CONFIDENCE_WEIGHT * (1.0 - score)
+            confidence = alpha / (alpha + beta) if (alpha + beta) > 0 else 0.5
+
+            history = list(qa.get("confidence_history") or [])
+            history.append(score)
+            if len(history) > 100:
+                history = history[-100:]
+
+            updated_qas.append({
+                **qa,
+                "alpha": alpha,
+                "beta": beta,
+                "confidence": confidence,
+                "confidence_history": history,
+                "last_confidence_score": score,
+            })
+
+        return {"all_qa": updated_qas}
 
     # ----------------------------------------------------------
     # Node: ask LLM to refine code based on first-error frames
@@ -1138,6 +1389,7 @@ def create_refine_graph(llm):
     workflow.add_node("initial_generate", initial_generate_node)
     workflow.add_node("present_targeted_findings", present_targeted_findings_node)
     workflow.add_node("execute_and_evaluate", execute_and_evaluate_node)
+    workflow.add_node("score_qa_confidence", score_qa_confidence_node)
     workflow.add_node("refine_code", refine_code_node)
     workflow.add_node("generate_questions", generate_questions_node)
 
@@ -1151,8 +1403,9 @@ def create_refine_graph(llm):
 
     workflow.add_edge("initial_generate", "execute_and_evaluate")
     workflow.add_edge("present_targeted_findings", "execute_and_evaluate")
+    workflow.add_edge("execute_and_evaluate", "score_qa_confidence")
 
-    workflow.add_conditional_edges("execute_and_evaluate", route_after_evaluate, {
+    workflow.add_conditional_edges("score_qa_confidence", route_after_evaluate, {
         "refine_code": "refine_code",
         "generate_questions": "generate_questions",
         END: END,

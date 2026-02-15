@@ -537,21 +537,27 @@ _EXPLORE_ERRORS_SECTION = """
 """
 
 
-def _format_qa_pairs(qa_list: List[Dict[str, str]]) -> str:
+def _format_qa_pairs(qa_list: List[Dict[str, Any]]) -> str:
     """Format a list of Q&A dicts into readable text."""
     if not qa_list:
         return "(none yet)"
-    parts: List[str] = []
+    parts: List[str] = [
+        "(`confidence` is in [0,1]. Higher means the QA is more reliable; "
+        "0 means the QA is very likely incorrect and should generally not be relied on.)",
+        "",
+    ]
     for i, qa in enumerate(qa_list, 1):
+        conf = qa.get("confidence")
+        conf_text = f" [confidence={float(conf):.3f}]" if isinstance(conf, (int, float)) else ""
         parts.append(f"Q{i}: {qa.get('question', '?')}")
-        parts.append(f"A{i}: {qa.get('answer', '?')}")
+        parts.append(f"A{i}{conf_text}: {qa.get('answer', '?')}")
         parts.append("")
     return "\n".join(parts)
 
 
 def build_exploration_prompt(
     current_code: Optional[str],
-    explored_qa: List[Dict[str, str]],
+    explored_qa: List[Dict[str, Any]],
     pending_questions: List[str],
     error_frames: List[Dict[str, Any]],
     questions_from_refine: bool,
@@ -1105,7 +1111,14 @@ def create_explore_graph(llm):
             summary: ExplorationSummary = structured_llm.invoke(
                 llm_messages, config={"callbacks": [trace_cb]})
             new_qa = [
-                {"question": qa.question, "answer": qa.answer}
+                {
+                    "question": qa.question,
+                    "answer": qa.answer,
+                    "confidence": 0.7,
+                    "alpha": 1.4,
+                    "beta": 0.6,
+                    "confidence_history": [],
+                }
                 for qa in summary.qa_pairs
             ]
             _log_llm_call(
