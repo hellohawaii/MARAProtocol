@@ -1,4 +1,5 @@
 import argparse
+import shutil
 from pathlib import Path
 
 from env_wrapper import (
@@ -52,6 +53,19 @@ def main() -> int:
         )
         env_api_result = execute_run_command(env_test_script)
         print(env_api_result)
+
+    print_header("5) Check trajectory with external tool")
+    source_program = Path(__file__).resolve().parent.parent / "example_benchmark" / "python_programs" / f"{args.env_name}.py"
+    target_program = workspace / f"test_{args.env_name}.py"
+    if source_program.exists():
+        shutil.copy(source_program, target_program)
+        print(f"Copied {source_program.name} to {target_program.name}")
+    else:
+        print(f"Warning: {source_program} does not exist, check_traj_example might fail.")
+
+    check_cmd = f"python check_traj_example.py test_{args.env_name}.py traj/{args.env_name}/"
+    check_result = execute_run_command(check_cmd)
+    print(check_result)
 
     print_header("DONE")
     print("Smoke test completed.")
