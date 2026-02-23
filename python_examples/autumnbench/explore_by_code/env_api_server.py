@@ -15,8 +15,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 AUTUMNBENCH_DIR = SCRIPT_DIR.parent
 PY_EXAMPLES_DIR = AUTUMNBENCH_DIR.parent
 MARA_ROOT = AUTUMNBENCH_DIR.parent.parent
-WORKSPACE_DIR = SCRIPT_DIR / "llm_workspace"
-TRAJ_DIR = WORKSPACE_DIR / "traj"
+DEFAULT_WORKSPACE_DIR = (SCRIPT_DIR / "llm_workspace").resolve()
+RUNS_WORKSPACE_ROOT_DIR = (SCRIPT_DIR / "llm_workspace_runs").resolve()
 
 for path in (str(MARA_ROOT), str(PY_EXAMPLES_DIR), str(AUTUMNBENCH_DIR)):
     if path not in sys.path:
@@ -59,9 +59,16 @@ class SaveTrajectoryRequest(BaseModel):
     filename: Optional[str] = Field(default=None, description="Optional base filename without path")
 
 
+class SetWorkspaceRequest(BaseModel):
+    workspace_dir: str = Field(..., description="Absolute workspace directory for current run")
+    run_id: Optional[str] = Field(default=None, description="Optional run identifier for logging")
+
+
 class EnvSession:
     def __init__(self) -> None:
         self._lock = Lock()
+        self.workspace_dir: Path = DEFAULT_WORKSPACE_DIR
+        self.current_run_id: Optional[str] = None
         self.interpreter: Optional[Any] = None
         self.env_name: Optional[str] = None
         self.data_dir: Optional[Path] = None
@@ -70,6 +77,34 @@ class EnvSession:
         self.current_state: Optional[Dict[str, Any]] = None
         self.actions: List[str] = []
         self.transitions: List[Dict[str, Any]] = []
+        self._ensure_workspace_dirs()
+
+    def _ensure_workspace_dirs(self) -> None:
+        self.workspace_dir.mkdir(parents=True, exist_ok=True)
+        (self.workspace_dir / "traj").mkdir(parents=True, exist_ok=True)
+
+    def _validate_workspace_dir(self, workspace_dir: Path) -> None:
+        if workspace_dir == DEFAULT_WORKSPACE_DIR:
+            return
+        if workspace_dir.is_relative_to(RUNS_WORKSPACE_ROOT_DIR):
+            return
+        raise ValueError(
+            f"Workspace must be under {RUNS_WORKSPACE_ROOT_DIR} or equal to {DEFAULT_WORKSPACE_DIR}, got: {workspace_dir}"
+        )
+
+    def set_workspace(self, workspace_dir: str, run_id: Optional[str]) -> Dict[str, Any]:
+        with self._lock:
+            resolved = Path(workspace_dir).resolve()
+            self._validate_workspace_dir(resolved)
+            resolved.mkdir(parents=True, exist_ok=True)
+            (resolved / "traj").mkdir(parents=True, exist_ok=True)
+            self.workspace_dir = resolved
+            self.current_run_id = run_id
+            return {
+                "ok": True,
+                "workspace_dir": str(self.workspace_dir),
+                "run_id": self.current_run_id,
+            }
 
     def _load_program(self, env_name: str, data_dir: Path) -> str:
         program_path = data_dir / "programs" / f"{env_name}.sexp"
@@ -179,7 +214,7 @@ class EnvSession:
             if self.env_name is None or self.data_dir is None:
                 raise RuntimeError("Environment not initialized. Call reset first.")
 
-            env_dir = TRAJ_DIR / self.env_name
+            env_dir = (self.workspace_dir / "traj") / self.env_name
             env_dir.mkdir(parents=True, exist_ok=True)
 
             if filename:
@@ -206,6 +241,8 @@ class EnvSession:
                 "ok": True,
                 "path": str(out_path),
                 "num_transitions": len(self.transitions),
+                "workspace_dir": str(self.workspace_dir),
+                "run_id": self.current_run_id,
             }
 
 
@@ -215,9 +252,20 @@ session = EnvSession()
 
 @app.get("/health")
 def health() -> Dict[str, Any]:
-    WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
-    TRAJ_DIR.mkdir(parents=True, exist_ok=True)
-    return {"ok": True}
+    session._ensure_workspace_dirs()
+    return {
+        "ok": True,
+        "workspace_dir": str(session.workspace_dir),
+        "run_id": session.current_run_id,
+    }
+
+
+@app.post("/set_workspace")
+def set_workspace(payload: SetWorkspaceRequest) -> Dict[str, Any]:
+    try:
+        return session.set_workspace(payload.workspace_dir, payload.run_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/reset")

@@ -1,18 +1,25 @@
 import atexit
 import hashlib
+import json
 import os
+import shutil
 import threading
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
 import docker
 from docker.errors import DockerException, NotFound
 
 
 BASE_DIR = Path(__file__).resolve().parent
-WORKSPACE_DIR = (BASE_DIR / "llm_workspace").resolve()
-TRAJ_DIR = WORKSPACE_DIR / "traj"
+TEMPLATE_WORKSPACE_DIR = (BASE_DIR / "llm_workspace").resolve()
+RUNS_WORKSPACE_ROOT_DIR = (BASE_DIR / "llm_workspace_runs").resolve()
+WORKSPACE_DIR = TEMPLATE_WORKSPACE_DIR
+TRAJ_DIR = TEMPLATE_WORKSPACE_DIR / "traj"
 DEFAULT_DOCKER_IMAGE = "python:3.11-slim"
 _RUNTIME_LOCK = threading.Lock()
 _RUNTIME_SESSION: Optional["_DockerRuntime"] = None
@@ -20,8 +27,9 @@ _RUNTIME_KEY: Optional[tuple] = None
 
 
 def ensure_workspace_dirs() -> None:
-	WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+	TEMPLATE_WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 	TRAJ_DIR.mkdir(parents=True, exist_ok=True)
+	RUNS_WORKSPACE_ROOT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class _DockerRuntime:
@@ -40,6 +48,8 @@ class _DockerRuntime:
 		self.env_api_base_url = env_api_base_url
 		self.client = docker.from_env()
 		self.container = None
+		self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+		self.active_workspace_dir = (RUNS_WORKSPACE_ROOT_DIR / self.run_id).resolve()
 		self.container_name = f"autumnbench-shell-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 		atexit.register(self.close)
 
@@ -76,7 +86,7 @@ class _DockerRuntime:
 
 	def _build_image_tag(self) -> str:
 		payload = (
-			f"{self.dockerfile_path}|{self.docker_build_context}|{WORKSPACE_DIR}"
+			f"{self.dockerfile_path}|{self.docker_build_context}|{TEMPLATE_WORKSPACE_DIR}"
 		).encode("utf-8")
 		return f"autumnbench/explore-shell:{hashlib.sha256(payload).hexdigest()[:12]}"
 
@@ -100,6 +110,45 @@ class _DockerRuntime:
 		)
 		return image_tag
 
+	def _prepare_run_workspace(self) -> None:
+		if self.active_workspace_dir.exists():
+			return
+		if not TEMPLATE_WORKSPACE_DIR.exists():
+			raise ValueError(f"Template workspace not found: {TEMPLATE_WORKSPACE_DIR}")
+		RUNS_WORKSPACE_ROOT_DIR.mkdir(parents=True, exist_ok=True)
+		shutil.copytree(TEMPLATE_WORKSPACE_DIR, self.active_workspace_dir, dirs_exist_ok=False)
+		(self.active_workspace_dir / "traj").mkdir(parents=True, exist_ok=True)
+
+	def _set_env_api_workspace(self) -> None:
+		url = f"{self.env_api_base_url.rstrip('/')}/set_workspace"
+		payload = {
+			"workspace_dir": str(self.active_workspace_dir),
+			"run_id": self.run_id,
+		}
+		body = json.dumps(payload).encode("utf-8")
+		req = urlrequest.Request(
+			url,
+			data=body,
+			headers={"Content-Type": "application/json"},
+			method="POST",
+		)
+		try:
+			with urlrequest.urlopen(req, timeout=10) as resp:
+				raw = resp.read().decode("utf-8")
+		except urlerror.HTTPError as exc:
+			msg = exc.read().decode("utf-8", errors="replace")
+			raise ValueError(f"Failed to set env API workspace (HTTP {exc.code}): {msg}") from exc
+		except urlerror.URLError as exc:
+			raise ValueError(f"Failed to reach env API at {url}: {exc}") from exc
+
+		try:
+			parsed = json.loads(raw)
+		except json.JSONDecodeError as exc:
+			raise ValueError(f"Invalid /set_workspace response: {raw}") from exc
+
+		if not parsed.get("ok"):
+			raise ValueError(f"Env API rejected workspace switch: {parsed}")
+
 	def _ensure_container_running(self) -> None:
 		if self.container is not None:
 			try:
@@ -116,6 +165,8 @@ class _DockerRuntime:
 			user_id = f"{os.getuid()}:{os.getgid()}"
 		else:
 			user_id = "1000:1000"
+		self._prepare_run_workspace()
+		self._set_env_api_workspace()
 
 		try:
 			self.container = self.client.containers.run(
@@ -123,9 +174,13 @@ class _DockerRuntime:
 				command=["tail", "-f", "/dev/null"],
 				name=self.container_name,
 				detach=True,
-				volumes={str(WORKSPACE_DIR): {"bind": "/workspace", "mode": "rw"}},
+				volumes={str(self.active_workspace_dir): {"bind": "/workspace", "mode": "rw"}},
 				working_dir="/workspace",
-				environment={"ENV_API_BASE_URL": self.env_api_base_url},
+				environment={
+					"ENV_API_BASE_URL": self.env_api_base_url,
+					"RUN_ID": self.run_id,
+					"RUN_WORKSPACE_DIR": str(self.active_workspace_dir),
+				},
 				extra_hosts={"host.docker.internal": "host-gateway"},
 				mem_limit="512m",
 				memswap_limit="512m",
@@ -179,6 +234,14 @@ class _DockerRuntime:
 			"stdout": state.get("stdout", ""),
 			"stderr": state.get("stderr", ""),
 			"exit_code": state.get("exit_code"),
+		}
+
+	def get_runtime_info(self) -> dict:
+		return {
+			"run_id": self.run_id,
+			"workspace_dir": str(self.active_workspace_dir),
+			"container_name": self.container_name,
+			"container_running": bool(self.container is not None),
 		}
 
 
@@ -262,6 +325,13 @@ def execute_run_command(
 		return f"❌ Internal execution error: {str(exc)}"
 
 
+def get_runtime_info() -> dict:
+	with _RUNTIME_LOCK:
+		if _RUNTIME_SESSION is None:
+			return {}
+		return _RUNTIME_SESSION.get_runtime_info()
+
+
 def get_langchain_tools(
 	docker_image: str = DEFAULT_DOCKER_IMAGE,
 	timeout_seconds: int = 15,
@@ -291,7 +361,7 @@ def get_langchain_tools(
 		name="run_command_in_docker",
 		description=(
 			"Execute a shell command inside a persistent Docker container managed by Docker SDK, "
-			"with /workspace mounted to llm_workspace. Input arg: command."
+			"with /workspace mounted to a nisolated workspace. Input arg: command."
 		),
 	)
 
@@ -304,5 +374,6 @@ __all__: List[str] = [
 	"DEFAULT_DOCKER_IMAGE",
 	"ensure_workspace_dirs",
 	"execute_run_command",
+	"get_runtime_info",
 	"get_langchain_tools",
 ]

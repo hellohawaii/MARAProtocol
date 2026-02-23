@@ -9,3 +9,4 @@ AutumnBenchmark
 log
 python_examples/autumnbench/example_benchmark/*
 python_examples/autumnbench/llm_cache.db
+python_examples/autumnbench/explore_by_code/llm_workspace_runs/*
