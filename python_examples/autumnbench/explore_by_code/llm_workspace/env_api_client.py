@@ -32,11 +32,8 @@ class RemoteEnvWrapper:
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"Invalid JSON response from {url}: {resp_body}") from exc
 
-    def reset(self, env_name: str, data_dir: Optional[str] = None, seed: int = 0) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {"env_name": env_name, "seed": seed}
-        if data_dir:
-            payload["data_dir"] = data_dir
-        return self._post("/reset", payload)
+    def reset(self) -> Dict[str, Any]:
+        return self._post("/reset", {})
 
     def step(self, action: str) -> Dict[str, Any]:
         return self._post("/step", {"action": action})

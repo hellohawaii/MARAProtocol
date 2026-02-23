@@ -35,10 +35,11 @@ def ensure_workspace_dirs() -> None:
 class _DockerRuntime:
 	def __init__(
 		self,
-		docker_image: str,
+		docker_image: Optional[str],
 		dockerfile_path: Optional[str],
 		docker_build_context: Optional[str],
 		env_api_base_url: str,
+		env_name: Optional[str],
 	) -> None:
 		self.docker_image = docker_image
 		self.dockerfile_path = Path(dockerfile_path).resolve() if dockerfile_path else None
@@ -46,6 +47,7 @@ class _DockerRuntime:
 			Path(docker_build_context).resolve() if docker_build_context else None
 		)
 		self.env_api_base_url = env_api_base_url
+		self.env_name = env_name
 		self.client = docker.from_env()
 		self.container = None
 		self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -92,7 +94,7 @@ class _DockerRuntime:
 
 	def _ensure_image(self) -> str:
 		if self.dockerfile_path is None:
-			return self.docker_image
+			return self.docker_image or DEFAULT_DOCKER_IMAGE
 
 		build_context, dockerfile_rel = self._resolve_build_context_and_dockerfile()
 		image_tag = self._build_image_tag()
@@ -149,6 +151,35 @@ class _DockerRuntime:
 		if not parsed.get("ok"):
 			raise ValueError(f"Env API rejected workspace switch: {parsed}")
 
+	def _set_env_api_env_name(self) -> None:
+		if not self.env_name:
+			return
+		url = "http://127.0.0.1:8000/_set_env_name"
+		payload = {"env_name": self.env_name}
+		body = json.dumps(payload).encode("utf-8")
+		req = urlrequest.Request(
+			url,
+			data=body,
+			headers={"Content-Type": "application/json"},
+			method="POST",
+		)
+		try:
+			with urlrequest.urlopen(req, timeout=10) as resp:
+				raw = resp.read().decode("utf-8")
+		except urlerror.HTTPError as exc:
+			msg = exc.read().decode("utf-8", errors="replace")
+			raise ValueError(f"Failed to set hidden env name (HTTP {exc.code}): {msg}") from exc
+		except urlerror.URLError as exc:
+			raise ValueError(f"Failed to reach env API at {url}: {exc}") from exc
+
+		try:
+			parsed = json.loads(raw)
+		except json.JSONDecodeError as exc:
+			raise ValueError(f"Invalid /_set_env_name response: {raw}") from exc
+
+		if not parsed.get("ok"):
+			raise ValueError(f"Env API rejected env_name switch: {parsed}")
+
 	def _ensure_container_running(self) -> None:
 		if self.container is not None:
 			try:
@@ -167,6 +198,7 @@ class _DockerRuntime:
 			user_id = "1000:1000"
 		self._prepare_run_workspace()
 		self._set_env_api_workspace()
+		self._set_env_api_env_name()
 
 		try:
 			self.container = self.client.containers.run(
@@ -246,10 +278,11 @@ class _DockerRuntime:
 
 
 def _get_runtime(
-	docker_image: str,
+	docker_image: Optional[str],
 	dockerfile_path: Optional[str],
 	docker_build_context: Optional[str],
 	env_api_base_url: str,
+	env_name: Optional[str],
 ) -> _DockerRuntime:
 	global _RUNTIME_SESSION
 	global _RUNTIME_KEY
@@ -258,6 +291,7 @@ def _get_runtime(
 		str(Path(dockerfile_path).resolve()) if dockerfile_path else None,
 		str(Path(docker_build_context).resolve()) if docker_build_context else None,
 		env_api_base_url,
+		env_name,
 	)
 	with _RUNTIME_LOCK:
 		if _RUNTIME_SESSION is not None and _RUNTIME_KEY == requested_key:
@@ -268,6 +302,7 @@ def _get_runtime(
 			dockerfile_path=dockerfile_path,
 			docker_build_context=docker_build_context,
 			env_api_base_url=env_api_base_url,
+			env_name=env_name,
 		)
 		if _RUNTIME_SESSION is None:
 			_RUNTIME_SESSION = candidate
@@ -283,10 +318,11 @@ def _get_runtime(
 def execute_run_command(
 	command: str,
 	timeout_seconds: int = 15,
-	docker_image: str = DEFAULT_DOCKER_IMAGE,
+	docker_image: Optional[str] = None,
 	dockerfile_path: Optional[str] = None,
 	docker_build_context: Optional[str] = None,
 	env_api_base_url: str = "http://host.docker.internal:8000",
+	env_name: Optional[str] = None,
 ) -> str:
 	ensure_workspace_dirs()
 	try:
@@ -295,6 +331,7 @@ def execute_run_command(
 			dockerfile_path=dockerfile_path,
 			docker_build_context=docker_build_context,
 			env_api_base_url=env_api_base_url,
+			env_name=env_name,
 		)
 		result = runtime.exec_command(command=command, timeout_seconds=timeout_seconds)
 
@@ -333,11 +370,12 @@ def get_runtime_info() -> dict:
 
 
 def get_langchain_tools(
-	docker_image: str = DEFAULT_DOCKER_IMAGE,
+	docker_image: Optional[str] = None,
 	timeout_seconds: int = 15,
 	dockerfile_path: Optional[str] = None,
 	docker_build_context: Optional[str] = None,
 	env_api_base_url: str = "http://host.docker.internal:8000",
+	env_name: Optional[str] = None,
 ):
 	try:
 		from langchain_core.tools import StructuredTool
@@ -354,14 +392,17 @@ def get_langchain_tools(
 			dockerfile_path=dockerfile_path,
 			docker_build_context=docker_build_context,
 			env_api_base_url=env_api_base_url,
+			env_name=env_name,
 		)
 
 	run_command_tool = StructuredTool.from_function(
 		func=_run_command,
 		name="run_command_in_docker",
 		description=(
-			"Execute a shell command inside a persistent Docker container managed by Docker SDK, "
-			"with /workspace mounted to a nisolated workspace. Input arg: command."
+			"Execute one shell command in a persistent Docker workspace at /workspace. "
+			"Use this to run Python scripts, call RemoteEnvWrapper (env.reset/env.step/env.save_trajectory), "
+			"write code files, and run check_traj_example.py on traj/ data. "
+			"Container state and files persist across calls. Input: command."
 		),
 	)
 

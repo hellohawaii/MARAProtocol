@@ -47,12 +47,12 @@ def main() -> int:
     args = parser.parse_args()
 
     print_header("1) execute_run_command")
-    cmd_msg = execute_run_command("python -c \"print('run_command ok')\"")
+    cmd_msg = execute_run_command("python -c \"print('run_command ok')\"", env_name=args.env_name)
     print(cmd_msg)
 
     print_header("2) Persistent container state check")
-    execute_run_command("sh -lc \"echo persistent > _persist_check.txt\"")
-    persist_msg = execute_run_command("cat _persist_check.txt")
+    execute_run_command("sh -lc \"echo persistent > _persist_check.txt\"", env_name=args.env_name)
+    persist_msg = execute_run_command("cat _persist_check.txt", env_name=args.env_name)
     print(persist_msg)
 
     runtime_info = get_runtime_info()
@@ -61,7 +61,7 @@ def main() -> int:
     print(f"Persistent file exists: {out_file.exists()} -> {out_file}")
 
     print_header("3) LangChain tools")
-    tools = get_langchain_tools()
+    tools = get_langchain_tools(env_name=args.env_name)
     run_tool = next(t for t in tools if t.name == "run_command_in_docker")
 
     tool_run_result = run_tool.invoke({"command": "python -c \"print('tool run ok')\""})
@@ -74,13 +74,13 @@ def main() -> int:
             "import json\n"
             "from env_api_client import RemoteEnvWrapper\n"
             f"env = RemoteEnvWrapper()\n"
-            f"r = env.reset(env_name='{args.env_name}', seed=0)\n"
+            "r = env.reset()\n"
             "s = env.step('noop')\n"
             "t = env.save_trajectory('smoke_traj')\n"
-            "print(json.dumps({'reset_ok': r.get('ok'), 'step_ok': s.get('ok'), 'obfuscated': r.get('obfuscated'), 'traj_path': t.get('path')}, ensure_ascii=False))\n"
+            "print(json.dumps({'reset_state_type': type(r).__name__, 'step_state_type': type(s).__name__, 'save_result': t}, ensure_ascii=False))\n"
             "PY"
         )
-        env_api_result = execute_run_command(env_test_script)
+        env_api_result = execute_run_command(env_test_script, env_name=args.env_name)
         print(env_api_result)
 
     print_header("5) Check trajectory with external tool")
@@ -93,8 +93,8 @@ def main() -> int:
     else:
         print(f"Warning: {source_program} does not exist, check_traj_example might fail.")
 
-    check_cmd = f"python check_traj_example.py test_{args.env_name}.py traj/{args.env_name}/"
-    check_result = execute_run_command(check_cmd)
+    check_cmd = f"python check_traj_example.py test_{args.env_name}.py traj/"
+    check_result = execute_run_command(check_cmd, env_name=args.env_name)
     print(check_result)
 
     print_header("6) Isolation check (two independent runs)")

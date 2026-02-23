@@ -49,15 +49,15 @@ python - <<'PY'
 from env_api_client import RemoteEnvWrapper
 
 env = RemoteEnvWrapper()
-print(env.reset(env_name='7XF97', seed=0).keys())
-print(env.step('noop').keys())
-print(env.save_trajectory('demo_traj').get('path'))
+print(type(env.reset()).__name__)             # dict state
+print(type(env.step('noop')).__name__)             # dict state
+print(env.save_trajectory('demo_traj'))            # success flag object
 PY
 ```
 
 Trajectories are saved to:
 
-- `python_examples/autumnbench/explore_by_code/llm_workspace/traj/<ENV>/...json`
+- `python_examples/autumnbench/explore_by_code/llm_workspace/traj/...json`
 
 ## 3) LangChain tools integration
 
@@ -98,3 +98,29 @@ Optional: also test `env.reset()` / `env.step()` / `env.save_trajectory()` from 
 ```bash
 python python_examples/autumnbench/explore_by_code/smoke_test_tools.py --test-env-api --env-name 7XF97
 ```
+
+## 5) Simple ReAct agent with shell tool
+
+You can run a standalone ReAct agent that only has one tool:
+`run_command_in_docker`.
+
+The agent is guided by a fixed system prompt and will decide by itself how to:
+- explore the env via `RemoteEnvWrapper`,
+- save trajectories,
+- write Python model files,
+- run `check_traj_example.py`,
+- and stop when it decides understanding is sufficient.
+
+Run:
+
+```bash
+python python_examples/autumnbench/explore_by_code/shell_react_explorer.py 7XF97 \
+  --max-turns 120 \
+  --timeout-seconds 30 \
+  --save-transcript-path python_examples/autumnbench/explore_by_code/llm_workspace/agent_runs/7XF97_run.json
+```
+
+Optional flags:
+- `--llm-model <model_id>`: defaults to `google/gemini-2.5-pro`
+- `--dockerfile-path` and `--docker-build-context`: custom tool image build
+- `--env-api-base-url`: defaults to `http://host.docker.internal:8000`

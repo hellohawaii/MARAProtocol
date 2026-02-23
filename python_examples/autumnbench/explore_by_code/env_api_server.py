@@ -46,9 +46,7 @@ def _obfuscate_scene_graph(render_dict: Dict[str, Any], mapping: Dict[str, str])
 
 
 class ResetRequest(BaseModel):
-    env_name: str = Field(..., description="Environment name, e.g. 7XF97")
-    data_dir: Optional[str] = Field(default=None, description="Directory containing programs/<ENV>.sexp")
-    seed: int = 0
+    pass
 
 
 class StepRequest(BaseModel):
@@ -64,11 +62,16 @@ class SetWorkspaceRequest(BaseModel):
     run_id: Optional[str] = Field(default=None, description="Optional run identifier for logging")
 
 
+class SetEnvNameRequest(BaseModel):
+    env_name: str = Field(..., description="Environment name, e.g. 7XF97")
+
+
 class EnvSession:
     def __init__(self) -> None:
         self._lock = Lock()
         self.workspace_dir: Path = DEFAULT_WORKSPACE_DIR
         self.current_run_id: Optional[str] = None
+        self.configured_env_name: Optional[str] = None
         self.interpreter: Optional[Any] = None
         self.env_name: Optional[str] = None
         self.data_dir: Optional[Path] = None
@@ -105,6 +108,11 @@ class EnvSession:
                 "workspace_dir": str(self.workspace_dir),
                 "run_id": self.current_run_id,
             }
+
+    def set_env_name(self, env_name: str) -> Dict[str, Any]:
+        with self._lock:
+            self.configured_env_name = env_name
+            return {"ok": True}
 
     def _load_program(self, env_name: str, data_dir: Path) -> str:
         program_path = data_dir / "programs" / f"{env_name}.sexp"
@@ -151,10 +159,14 @@ class EnvSession:
             return True
         return False
 
-    def reset(self, env_name: str, data_dir: Optional[str], seed: int) -> Dict[str, Any]:
+    def reset(self) -> Dict[str, Any]:
         with self._lock:
-            resolved_data_dir = Path(data_dir).resolve() if data_dir else (AUTUMNBENCH_DIR / "example_benchmark").resolve()
+            env_name = self.configured_env_name
+            if not env_name:
+                raise RuntimeError("Environment not configured. Internal setup must call /_set_env_name first.")
+            resolved_data_dir = (AUTUMNBENCH_DIR / "example_benchmark").resolve()
             program = self._load_program(env_name, resolved_data_dir)
+            seed = 0
 
             interpreter = Interpreter()
             interpreter.run_script(program, autumnstdlib, "", seed)
@@ -170,14 +182,7 @@ class EnvSession:
             self.actions = []
             self.transitions = []
 
-            return {
-                "ok": True,
-                "env": env_name,
-                "seed": seed,
-                "data_dir": str(resolved_data_dir),
-                "obfuscated": obfuscated,
-                "state": self.current_state,
-            }
+            return self.current_state
 
     def step(self, action: str) -> Dict[str, Any]:
         with self._lock:
@@ -202,20 +207,15 @@ class EnvSession:
             self.actions.append(action)
             self.current_state = next_state
 
-            return {
-                "ok": True,
-                "step": len(self.transitions),
-                "action": action,
-                "state": next_state,
-            }
+            return next_state
 
     def save_trajectory(self, filename: Optional[str]) -> Dict[str, Any]:
         with self._lock:
             if self.env_name is None or self.data_dir is None:
                 raise RuntimeError("Environment not initialized. Call reset first.")
 
-            env_dir = (self.workspace_dir / "traj") / self.env_name
-            env_dir.mkdir(parents=True, exist_ok=True)
+            traj_dir = self.workspace_dir / "traj"
+            traj_dir.mkdir(parents=True, exist_ok=True)
 
             if filename:
                 safe_name = os.path.basename(filename)
@@ -225,7 +225,7 @@ class EnvSession:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 safe_name = f"trajectory_{timestamp}.json"
 
-            out_path = env_dir / safe_name
+            out_path = traj_dir / safe_name
 
             payload = {
                 "env": self.env_name,
@@ -237,13 +237,7 @@ class EnvSession:
             }
 
             out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-            return {
-                "ok": True,
-                "path": str(out_path),
-                "num_transitions": len(self.transitions),
-                "workspace_dir": str(self.workspace_dir),
-                "run_id": self.current_run_id,
-            }
+            return {"success": True}
 
 
 app = FastAPI(title="AutumnBench Environment API", version="1.0.0")
@@ -268,10 +262,18 @@ def set_workspace(payload: SetWorkspaceRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/_set_env_name")
+def set_env_name(payload: SetEnvNameRequest) -> Dict[str, Any]:
+    try:
+        return session.set_env_name(payload.env_name)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/reset")
 def reset_env(payload: ResetRequest) -> Dict[str, Any]:
     try:
-        return session.reset(payload.env_name, payload.data_dir, payload.seed)
+        return session.reset()
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

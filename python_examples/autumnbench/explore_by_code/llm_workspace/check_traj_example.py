@@ -209,14 +209,17 @@ def load_trajectories(path: str) -> List[Dict[str, Any]]:
         for root, _, files in os.walk(path):
             for file in sorted(files):
                 if file.endswith(".json"):
-                    with open(os.path.join(root, file), "r", encoding="utf-8") as f:
+                    file_path = os.path.join(root, file)
+                    with open(file_path, "r", encoding="utf-8") as f:
                         data = json.load(f)
                         if "trajectory" in data:
+                            data["__traj_name"] = os.path.relpath(file_path, path)
                             trajectories.append(data)
     else:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
             if "trajectory" in data:
+                data["__traj_name"] = os.path.basename(path)
                 trajectories.append(data)
                 
     return trajectories
@@ -233,10 +236,21 @@ def evaluate(code_str: str, trajectories: List[Dict[str, Any]]) -> Dict[str, Any
     total_steps = 0
     total_correct = 0
     per_traj_accuracy = []
+    per_trajectory_stats = []
 
     for idx, traj_data in enumerate(trajectories):
+        traj_name = traj_data.get("__traj_name", f"traj_{idx}")
         transitions = traj_data.get("trajectory", [])
         if not transitions:
+            per_traj_accuracy.append(0)
+            per_trajectory_stats.append(
+                {
+                    "traj_name": traj_name,
+                    "correct_frames": 0,
+                    "total_frames": 0,
+                    "accuracy": 0,
+                }
+            )
             continue
             
         _, hidden_state, error = _call_init_state(init_state_func)
@@ -274,6 +288,14 @@ def evaluate(code_str: str, trajectories: List[Dict[str, Any]]) -> Dict[str, Any
 
         accuracy = (correct_predictions / total_predictions) if total_predictions > 0 else 0
         per_traj_accuracy.append(accuracy)
+        per_trajectory_stats.append(
+            {
+                "traj_name": traj_name,
+                "correct_frames": correct_predictions,
+                "total_frames": total_predictions,
+                "accuracy": accuracy,
+            }
+        )
         total_steps += total_predictions
         total_correct += correct_predictions
 
@@ -287,6 +309,7 @@ def evaluate(code_str: str, trajectories: List[Dict[str, Any]]) -> Dict[str, Any
         "total_correct": total_correct,
         "is_perfect": is_perfect,
         "per_trajectory_accuracy": per_traj_accuracy,
+        "per_trajectory_stats": per_trajectory_stats,
     }
 
 
