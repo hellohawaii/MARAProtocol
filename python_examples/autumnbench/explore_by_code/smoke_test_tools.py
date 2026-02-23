@@ -16,6 +16,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke test for explore_by_code tools")
     parser.add_argument("--env-name", default="7XF97", help="Env name for optional API test")
     parser.add_argument("--test-env-api", action="store_true", help="Also test env.reset/step/save_trajectory through container API client")
+    parser.add_argument("--obfuscated", action="store_true", help="Use obfuscated env and python_programs_obfuscated for trajectory check")
     args = parser.parse_args()
 
     print_header("1) execute_run_command")
@@ -48,18 +49,19 @@ def main() -> int:
             f"r = env.reset(env_name='{args.env_name}', seed=0)\n"
             "s = env.step('noop')\n"
             "t = env.save_trajectory('smoke_traj')\n"
-            "print(json.dumps({'reset_ok': r.get('ok'), 'step_ok': s.get('ok'), 'traj_path': t.get('path')}, ensure_ascii=False))\n"
+            "print(json.dumps({'reset_ok': r.get('ok'), 'step_ok': s.get('ok'), 'obfuscated': r.get('obfuscated'), 'traj_path': t.get('path')}, ensure_ascii=False))\n"
             "PY"
         )
         env_api_result = execute_run_command(env_test_script)
         print(env_api_result)
 
     print_header("5) Check trajectory with external tool")
-    source_program = Path(__file__).resolve().parent.parent / "example_benchmark" / "python_programs" / f"{args.env_name}.py"
+    programs_dir = "python_programs_obfuscated" if args.obfuscated else "python_programs"
+    source_program = Path(__file__).resolve().parent.parent / "example_benchmark" / programs_dir / f"{args.env_name}.py"
     target_program = workspace / f"test_{args.env_name}.py"
     if source_program.exists():
         shutil.copy(source_program, target_program)
-        print(f"Copied {source_program.name} to {target_program.name}")
+        print(f"Copied {source_program.name} (from {programs_dir}) to {target_program.name}")
     else:
         print(f"Warning: {source_program} does not exist, check_traj_example might fail.")
 

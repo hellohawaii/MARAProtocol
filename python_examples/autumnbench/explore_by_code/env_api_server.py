@@ -26,6 +26,25 @@ autumnstdlib = importlib.import_module("autumnbench.autumnstdlib").autumnstdlib
 Interpreter = importlib.import_module("interpreter_module").Interpreter
 
 
+def _load_obfuscation_mapping(data_dir: Path) -> Dict[str, str]:
+    mapping_path = data_dir / "obfuscation_mapping.json"
+    if not mapping_path.is_file():
+        raise FileNotFoundError(f"Obfuscation mapping not found at {mapping_path}")
+    return json.loads(mapping_path.read_text(encoding="utf-8"))
+
+
+def _obfuscate_scene_graph(render_dict: Dict[str, Any], mapping: Dict[str, str]) -> Dict[str, Any]:
+    obfuscated: Dict[str, Any] = {}
+    for key, value in render_dict.items():
+        if key == "GRID_SIZE":
+            obfuscated[key] = value
+            continue
+        if key not in mapping:
+            raise KeyError(f"Missing obfuscation mapping for object: {key}")
+        obfuscated[mapping[key]] = value
+    return obfuscated
+
+
 class ResetRequest(BaseModel):
     env_name: str = Field(..., description="Environment name, e.g. 7XF97")
     data_dir: Optional[str] = Field(default=None, description="Directory containing programs/<ENV>.sexp")
@@ -47,6 +66,7 @@ class EnvSession:
         self.env_name: Optional[str] = None
         self.data_dir: Optional[Path] = None
         self.seed: Optional[int] = None
+        self._obfuscation_mapping: Optional[Dict[str, str]] = None
         self.current_state: Optional[Dict[str, Any]] = None
         self.actions: List[str] = []
         self.transitions: List[Dict[str, Any]] = []
@@ -60,7 +80,10 @@ class EnvSession:
     def _render_state(self) -> Dict[str, Any]:
         if self.interpreter is None:
             raise RuntimeError("Environment not initialized. Call reset first.")
-        return json.loads(self.interpreter.render_all())
+        state = json.loads(self.interpreter.render_all())
+        if self._obfuscation_mapping is not None:
+            state = _obfuscate_scene_graph(state, self._obfuscation_mapping)
+        return state
 
     def _apply_action(self, action: str) -> bool:
         if self.interpreter is None:
@@ -105,6 +128,9 @@ class EnvSession:
             self.env_name = env_name
             self.data_dir = resolved_data_dir
             self.seed = seed
+            
+            obfuscated = os.getenv("OBFUSCATED", "0") == "1"
+            self._obfuscation_mapping = _load_obfuscation_mapping(resolved_data_dir) if obfuscated else None
             self.current_state = self._render_state()
             self.actions = []
             self.transitions = []
@@ -114,6 +140,7 @@ class EnvSession:
                 "env": env_name,
                 "seed": seed,
                 "data_dir": str(resolved_data_dir),
+                "obfuscated": obfuscated,
                 "state": self.current_state,
             }
 
