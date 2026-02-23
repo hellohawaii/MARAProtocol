@@ -1,13 +1,22 @@
+import atexit
+import hashlib
 import os
-import subprocess
+import threading
+import uuid
 from pathlib import Path
-from typing import List
+from typing import List, Optional
+
+import docker
+from docker.errors import DockerException, NotFound
 
 
 BASE_DIR = Path(__file__).resolve().parent
 WORKSPACE_DIR = (BASE_DIR / "llm_workspace").resolve()
 TRAJ_DIR = WORKSPACE_DIR / "traj"
 DEFAULT_DOCKER_IMAGE = "python:3.11-slim"
+_RUNTIME_LOCK = threading.Lock()
+_RUNTIME_SESSION: Optional["_DockerRuntime"] = None
+_RUNTIME_KEY: Optional[tuple] = None
 
 
 def ensure_workspace_dirs() -> None:
@@ -15,82 +24,240 @@ def ensure_workspace_dirs() -> None:
 	TRAJ_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def execute_write_file(filename: str, content: str) -> str:
-	ensure_workspace_dirs()
-	safe_filename = os.path.basename(filename)
-	file_path = WORKSPACE_DIR / safe_filename
-	file_path.write_text(content, encoding="utf-8")
-	return f"✅ File {safe_filename} was saved to workspace successfully."
+class _DockerRuntime:
+	def __init__(
+		self,
+		docker_image: str,
+		dockerfile_path: Optional[str],
+		docker_build_context: Optional[str],
+		env_api_base_url: str,
+	) -> None:
+		self.docker_image = docker_image
+		self.dockerfile_path = Path(dockerfile_path).resolve() if dockerfile_path else None
+		self.docker_build_context = (
+			Path(docker_build_context).resolve() if docker_build_context else None
+		)
+		self.env_api_base_url = env_api_base_url
+		self.client = docker.from_env()
+		self.container = None
+		self.container_name = f"autumnbench-shell-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+		atexit.register(self.close)
+
+	def close(self) -> None:
+		if self.container is not None:
+			try:
+				self.container.remove(force=True)
+			except DockerException:
+				pass
+			self.container = None
+
+	def ensure_daemon_ready(self) -> None:
+		self.client.ping()
+
+	def _resolve_build_context_and_dockerfile(self) -> tuple:
+		if self.dockerfile_path is None:
+			raise ValueError("dockerfile_path is required when building custom image.")
+
+		if not self.dockerfile_path.exists():
+			raise ValueError(f"Dockerfile not found: {self.dockerfile_path}")
+
+		build_context = self.docker_build_context or self.dockerfile_path.parent
+		if not build_context.exists() or not build_context.is_dir():
+			raise ValueError(f"Invalid docker build context: {build_context}")
+
+		try:
+			rel_dockerfile = self.dockerfile_path.relative_to(build_context)
+		except ValueError as exc:
+			raise ValueError(
+				"Dockerfile must be located inside docker_build_context for SDK build."
+			) from exc
+
+		return build_context, str(rel_dockerfile)
+
+	def _build_image_tag(self) -> str:
+		payload = (
+			f"{self.dockerfile_path}|{self.docker_build_context}|{WORKSPACE_DIR}"
+		).encode("utf-8")
+		return f"autumnbench/explore-shell:{hashlib.sha256(payload).hexdigest()[:12]}"
+
+	def _ensure_image(self) -> str:
+		if self.dockerfile_path is None:
+			return self.docker_image
+
+		build_context, dockerfile_rel = self._resolve_build_context_and_dockerfile()
+		image_tag = self._build_image_tag()
+		try:
+			self.client.images.get(image_tag)
+			return image_tag
+		except NotFound:
+			pass
+
+		self.client.images.build(
+			path=str(build_context),
+			dockerfile=dockerfile_rel,
+			tag=image_tag,
+			rm=True,
+		)
+		return image_tag
+
+	def _ensure_container_running(self) -> None:
+		if self.container is not None:
+			try:
+				self.container.reload()
+				if self.container.status == "running":
+					return
+				self.container.start()
+				return
+			except DockerException:
+				self.container = None
+
+		image = self._ensure_image()
+		if hasattr(os, "getuid") and hasattr(os, "getgid"):
+			user_id = f"{os.getuid()}:{os.getgid()}"
+		else:
+			user_id = "1000:1000"
+
+		try:
+			self.container = self.client.containers.run(
+				image=image,
+				command=["tail", "-f", "/dev/null"],
+				name=self.container_name,
+				detach=True,
+				volumes={str(WORKSPACE_DIR): {"bind": "/workspace", "mode": "rw"}},
+				working_dir="/workspace",
+				environment={"ENV_API_BASE_URL": self.env_api_base_url},
+				extra_hosts={"host.docker.internal": "host-gateway"},
+				mem_limit="512m",
+				memswap_limit="512m",
+				nano_cpus=1_000_000_000,
+				pids_limit=50,
+				security_opt=["no-new-privileges:true"],
+				user=user_id,
+			)
+		except DockerException:
+			# If name collision happens after abnormal process exit, reuse that container.
+			self.container = self.client.containers.get(self.container_name)
+			self.container.start()
+
+	def exec_command(self, command: str, timeout_seconds: int) -> dict:
+		self.ensure_daemon_ready()
+		self._ensure_container_running()
+
+		state = {}
+		done = threading.Event()
+
+		def _run_exec() -> None:
+			try:
+				exit_code, output = self.container.exec_run(
+					cmd=["sh", "-lc", command],
+					demux=True,
+				)
+				stdout_bytes, stderr_bytes = output if output else (b"", b"")
+				state["exit_code"] = exit_code
+				state["stdout"] = (stdout_bytes or b"").decode("utf-8", errors="replace")
+				state["stderr"] = (stderr_bytes or b"").decode("utf-8", errors="replace")
+			except Exception as exc:
+				state["error"] = exc
+			finally:
+				done.set()
+
+		thread = threading.Thread(target=_run_exec, daemon=True)
+		thread.start()
+		if not done.wait(timeout_seconds):
+			return {
+				"timed_out": True,
+				"stdout": "",
+				"stderr": "",
+				"exit_code": None,
+			}
+
+		if "error" in state:
+			raise state["error"]
+
+		return {
+			"timed_out": False,
+			"stdout": state.get("stdout", ""),
+			"stderr": state.get("stderr", ""),
+			"exit_code": state.get("exit_code"),
+		}
+
+
+def _get_runtime(
+	docker_image: str,
+	dockerfile_path: Optional[str],
+	docker_build_context: Optional[str],
+	env_api_base_url: str,
+) -> _DockerRuntime:
+	global _RUNTIME_SESSION
+	global _RUNTIME_KEY
+	requested_key = (
+		docker_image,
+		str(Path(dockerfile_path).resolve()) if dockerfile_path else None,
+		str(Path(docker_build_context).resolve()) if docker_build_context else None,
+		env_api_base_url,
+	)
+	with _RUNTIME_LOCK:
+		if _RUNTIME_SESSION is not None and _RUNTIME_KEY == requested_key:
+			return _RUNTIME_SESSION
+
+		candidate = _DockerRuntime(
+			docker_image=docker_image,
+			dockerfile_path=dockerfile_path,
+			docker_build_context=docker_build_context,
+			env_api_base_url=env_api_base_url,
+		)
+		if _RUNTIME_SESSION is None:
+			_RUNTIME_SESSION = candidate
+			_RUNTIME_KEY = requested_key
+			return _RUNTIME_SESSION
+
+		_RUNTIME_SESSION.close()
+		_RUNTIME_SESSION = candidate
+		_RUNTIME_KEY = requested_key
+		return _RUNTIME_SESSION
 
 
 def execute_run_command(
 	command: str,
 	timeout_seconds: int = 15,
 	docker_image: str = DEFAULT_DOCKER_IMAGE,
+	dockerfile_path: Optional[str] = None,
+	docker_build_context: Optional[str] = None,
 	env_api_base_url: str = "http://host.docker.internal:8000",
 ) -> str:
 	ensure_workspace_dirs()
-
-	if hasattr(os, "getuid") and hasattr(os, "getgid"):
-		user_id = f"{os.getuid()}:{os.getgid()}"
-	else:
-		user_id = "1000:1000"
-
-	docker_cmd = [
-		"docker",
-		"run",
-		"--rm",
-		"-v",
-		f"{str(WORKSPACE_DIR)}:/workspace",
-		"-w",
-		"/workspace",
-		"--add-host",
-		"host.docker.internal:host-gateway",
-		"--memory",
-		"512m",
-		"--memory-swap",
-		"512m",
-		"--cpus",
-		"1.0",
-		"--pids-limit",
-		"50",
-		"--security-opt",
-		"no-new-privileges",
-		"--user",
-		user_id,
-		"-e",
-		f"ENV_API_BASE_URL={env_api_base_url}",
-		docker_image,
-		"sh",
-		"-lc",
-		command,
-	]
-
 	try:
-		result = subprocess.run(
-			docker_cmd,
-			capture_output=True,
-			text=True,
-			timeout=timeout_seconds,
+		runtime = _get_runtime(
+			docker_image=docker_image,
+			dockerfile_path=dockerfile_path,
+			docker_build_context=docker_build_context,
+			env_api_base_url=env_api_base_url,
 		)
+		result = runtime.exec_command(command=command, timeout_seconds=timeout_seconds)
+
+		if result["timed_out"]:
+			return (
+				f"⏰ Timeout: command exceeded {timeout_seconds} seconds. "
+				"Container remains alive and command may still be running."
+			)
 
 		output_parts = []
-		if result.stdout:
-			output_parts.append(f"[STDOUT]:\n{result.stdout}")
-		if result.stderr:
-			output_parts.append(f"[STDERR]:\n{result.stderr}")
+		if result["stdout"]:
+			output_parts.append(f"[STDOUT]:\n{result['stdout']}")
+		if result["stderr"]:
+			output_parts.append(f"[STDERR]:\n{result['stderr']}")
 		output = "\n".join(output_parts).strip()
 
-		if result.returncode == 0:
+		if result["exit_code"] == 0:
 			if output:
 				return f"✅ Command executed successfully.\n{output}"
 			return "✅ Command executed successfully."
 
 		if output:
-			return f"❌ Command failed (exit code {result.returncode}).\n{output}"
-		return f"❌ Command failed (exit code {result.returncode})."
-	except subprocess.TimeoutExpired:
-		return f"⏰ Timeout: command exceeded {timeout_seconds} seconds and was terminated. Please check for infinite loops."
+			return f"❌ Command failed (exit code {result['exit_code']}).\n{output}"
+		return f"❌ Command failed (exit code {result['exit_code']})."
+	except (DockerException, ValueError) as exc:
+		return f"❌ Docker SDK error: {str(exc)}"
 	except Exception as exc:
 		return f"❌ Internal execution error: {str(exc)}"
 
@@ -98,6 +265,9 @@ def execute_run_command(
 def get_langchain_tools(
 	docker_image: str = DEFAULT_DOCKER_IMAGE,
 	timeout_seconds: int = 15,
+	dockerfile_path: Optional[str] = None,
+	docker_build_context: Optional[str] = None,
+	env_api_base_url: str = "http://host.docker.internal:8000",
 ):
 	try:
 		from langchain_core.tools import StructuredTool
@@ -106,35 +276,26 @@ def get_langchain_tools(
 			"langchain_core is required to build tools. Install langchain-core first."
 		) from exc
 
-	def _write_file(filename: str, content: str) -> str:
-		return execute_write_file(filename=filename, content=content)
-
 	def _run_command(command: str) -> str:
 		return execute_run_command(
 			command=command,
 			timeout_seconds=timeout_seconds,
 			docker_image=docker_image,
+			dockerfile_path=dockerfile_path,
+			docker_build_context=docker_build_context,
+			env_api_base_url=env_api_base_url,
 		)
-
-	write_file_tool = StructuredTool.from_function(
-		func=_write_file,
-		name="write_file",
-		description=(
-			"Write content into a file in llm_workspace with filename sandboxed by basename. "
-			"Input args: filename, content."
-		),
-	)
 
 	run_command_tool = StructuredTool.from_function(
 		func=_run_command,
 		name="run_command_in_docker",
 		description=(
-			"Execute a shell command inside isolated Docker, with /workspace mounted to llm_workspace. "
-			"Input arg: command."
+			"Execute a shell command inside a persistent Docker container managed by Docker SDK, "
+			"with /workspace mounted to llm_workspace. Input arg: command."
 		),
 	)
 
-	return [write_file_tool, run_command_tool]
+	return [run_command_tool]
 
 
 __all__: List[str] = [
@@ -142,7 +303,6 @@ __all__: List[str] = [
 	"TRAJ_DIR",
 	"DEFAULT_DOCKER_IMAGE",
 	"ensure_workspace_dirs",
-	"execute_write_file",
 	"execute_run_command",
 	"get_langchain_tools",
 ]

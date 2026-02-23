@@ -1,10 +1,8 @@
 import argparse
-import json
 from pathlib import Path
 
 from env_wrapper import (
     execute_run_command,
-    execute_write_file,
     get_langchain_tools,
 )
 
@@ -19,27 +17,22 @@ def main() -> int:
     parser.add_argument("--test-env-api", action="store_true", help="Also test env.reset/step/save_trajectory through container API client")
     args = parser.parse_args()
 
-    print_header("1) execute_write_file")
-    write_msg = execute_write_file("smoke_test.txt", "hello from smoke_test_tools")
-    print(write_msg)
-
-    workspace = Path(__file__).resolve().parent / "llm_workspace"
-    out_file = workspace / "smoke_test.txt"
-    print(f"File exists: {out_file.exists()} -> {out_file}")
-
-    print_header("2) execute_run_command")
+    print_header("1) execute_run_command")
     cmd_msg = execute_run_command("python -c \"print('run_command ok')\"")
     print(cmd_msg)
 
+    print_header("2) Persistent container state check")
+    execute_run_command("sh -lc \"echo persistent > _persist_check.txt\"")
+    persist_msg = execute_run_command("cat _persist_check.txt")
+    print(persist_msg)
+
+    workspace = Path(__file__).resolve().parent / "llm_workspace"
+    out_file = workspace / "_persist_check.txt"
+    print(f"Persistent file exists: {out_file.exists()} -> {out_file}")
+
     print_header("3) LangChain tools")
     tools = get_langchain_tools()
-    write_tool = next(t for t in tools if t.name == "write_file")
     run_tool = next(t for t in tools if t.name == "run_command_in_docker")
-
-    tool_write_result = write_tool.invoke(
-        {"filename": "tool_smoke_test.txt", "content": "hello from LangChain tool"}
-    )
-    print("write_file tool ->", tool_write_result)
 
     tool_run_result = run_tool.invoke({"command": "python -c \"print('tool run ok')\""})
     print("run_command_in_docker tool ->", tool_run_result)

@@ -8,9 +8,8 @@
   - `POST /save_trajectory`
 - `llm_workspace/env_api_client.py`: used by Python code inside Docker to call the APIs above
 - `env_wrapper.py`:
-  - `execute_write_file(filename, content)`
   - `execute_run_command(command, timeout_seconds=15, ...)`
-  - `get_langchain_tools(...)` returns two LangChain `StructuredTool`s
+  - `get_langchain_tools(...)` returns one LangChain `StructuredTool` (`run_command_in_docker`)
 
 ## 1) Start the host environment API
 
@@ -28,7 +27,8 @@ By default, it listens on `0.0.0.0:8000`.
 ## 2) Access the environment API inside Docker
 
 Use DinD (Docker daemon runs inside your current dev container). In this mode,
-`execute_run_command` mounts the in-container path directly, so no host path remapping is needed.
+`execute_run_command` uses Docker SDK and mounts the in-container path directly,
+so no host path remapping is needed.
 
 If Docker daemon is not running yet in the dev container, start it first:
 
@@ -65,12 +65,24 @@ Trajectories are saved to:
 from python_examples.autumnbench.explore_by_code.env_wrapper import get_langchain_tools
 
 tools = get_langchain_tools(
-  docker_image='python:3.11-slim',
+    docker_image='python:3.11-slim',
     timeout_seconds=15,
 )
-# tools[0] = write_file
-# tools[1] = run_command_in_docker
+# tools[0] = run_command_in_docker
 ```
+
+Optional: build a custom shell image from Dockerfile before first execution.
+
+```python
+tools = get_langchain_tools(
+    timeout_seconds=20,
+    dockerfile_path='python_examples/autumnbench/explore_by_code/Dockerfile.tool',
+    docker_build_context='python_examples/autumnbench/explore_by_code',
+)
+```
+
+`execute_run_command` keeps a persistent container per Python process.
+This means shell state can be reused across multiple commands.
 
 ## 4) One-shot smoke test
 
