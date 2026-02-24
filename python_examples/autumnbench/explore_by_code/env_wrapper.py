@@ -120,7 +120,7 @@ class _DockerRuntime:
 		(self.active_workspace_dir / "traj").mkdir(parents=True, exist_ok=True)
 
 	def _set_env_api_workspace(self) -> None:
-		url = f"{self.env_api_base_url.rstrip('/')}/set_workspace"
+		url = "http://127.0.0.1:8000/set_workspace"
 		payload = {
 			"workspace_dir": str(self.active_workspace_dir),
 			"run_id": self.run_id,
