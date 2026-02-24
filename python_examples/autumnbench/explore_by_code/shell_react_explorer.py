@@ -264,7 +264,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("env_name", default="7XF97", help="Environment id, e.g. 7XF97")
     parser.add_argument(
         "--llm-model",
-        default="google/gemini-3-flash-preview",
+        default="google/gemini-3-pro-preview",
         help="OpenRouter model id.",
     )
     parser.add_argument(

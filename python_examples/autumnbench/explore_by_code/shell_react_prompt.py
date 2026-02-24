@@ -109,8 +109,7 @@ Work style:
 
 def build_initial_user_prompt(env_name: str) -> str:
     return (
-        "Start now. The server has preconfigured a hidden env_name for this run "
-        f"('{env_name}'). Use run_command_in_docker to explore, save trajectories, "
+        "Start now. Use run_command_in_docker to explore, save trajectories, "
         "synthesize a Python model, and validate it with "
         "check_traj_example.py. Make your own decisions about when to stop."
     )
