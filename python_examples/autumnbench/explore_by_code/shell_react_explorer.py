@@ -24,7 +24,10 @@ for _p in [str(_AUTUMNBENCH_DIR), str(_MARA_ROOT)]:
 
 from langchain_utils import get_llm  # noqa: E402
 
-from env_wrapper import get_langchain_tools, get_runtime_info  # noqa: E402
+from env_wrapper import (  # noqa: E402
+    get_langchain_tools,
+    get_or_create_runtime_info,
+)
 from shell_react_prompt import (  # noqa: E402
     SHELL_REACT_SYSTEM_PROMPT,
     build_initial_user_prompt,
@@ -181,6 +184,13 @@ def run_shell_react_agent(
     env_api_base_url: str = "http://host.docker.internal:8000",
 ) -> Dict[str, Any]:
     llm = get_llm(model=llm_model)
+    runtime_info = get_or_create_runtime_info(
+        docker_image=docker_image,
+        dockerfile_path=dockerfile_path,
+        docker_build_context=docker_build_context,
+        env_api_base_url=env_api_base_url,
+        env_name=env_name,
+    )
     tools = get_langchain_tools(
         docker_image=docker_image,
         timeout_seconds=timeout_seconds,
@@ -197,11 +207,17 @@ def run_shell_react_agent(
 
     user_prompt = build_initial_user_prompt(env_name)
 
-    # Always persist detailed logs to an auto-generated path.
-    ts = int(time.time() * 1000)
-    transcript_path = (
-        _FILE_DIR / "logs" / f"shell_react_{env_name}_{ts}_transcript.json"
-    ).resolve()
+    # Persist logs under the same run_id used by llm_workspace_runs.
+    run_id = runtime_info.get("run_id")
+    if run_id:
+        transcript_path = (
+            _FILE_DIR / "logs" / run_id / f"shell_react_{env_name}_transcript.json"
+        ).resolve()
+    else:
+        ts = int(time.time() * 1000)
+        transcript_path = (
+            _FILE_DIR / "logs" / f"shell_react_{env_name}_{ts}_transcript.json"
+        ).resolve()
     detail_log_dir = transcript_path.with_suffix("") / "details"
     trace_cb = _JsonTraceCallback(detail_log_dir)
 
@@ -239,7 +255,7 @@ def run_shell_react_agent(
         "timeout_seconds": timeout_seconds,
         "num_messages": len(final_messages),
         "final_response": final_response,
-        "runtime_info": get_runtime_info(),
+        "runtime_info": runtime_info,
         "stream_event_count": stream_event_count,
     }
 

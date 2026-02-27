@@ -4,6 +4,8 @@ import json
 import os
 import shutil
 import threading
+import time
+import traceback
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +15,20 @@ from urllib import request as urlrequest
 
 import docker
 from docker.errors import DockerException, NotFound
+try:
+	from .log_utils import (
+		append_jsonl,
+		ensure_logs_root_dir,
+		persist_check_artifacts,
+		run_logs_dir,
+	)
+except ImportError:  # pragma: no cover
+	from log_utils import (
+		append_jsonl,
+		ensure_logs_root_dir,
+		persist_check_artifacts,
+		run_logs_dir,
+	)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -30,6 +46,7 @@ def ensure_workspace_dirs() -> None:
 	TEMPLATE_WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 	TRAJ_DIR.mkdir(parents=True, exist_ok=True)
 	RUNS_WORKSPACE_ROOT_DIR.mkdir(parents=True, exist_ok=True)
+	ensure_logs_root_dir()
 
 
 class _DockerRuntime:
@@ -325,6 +342,8 @@ def execute_run_command(
 	env_name: Optional[str] = None,
 ) -> str:
 	ensure_workspace_dirs()
+	ts_start = time.time()
+	ts_start_iso = datetime.fromtimestamp(ts_start).isoformat()
 	try:
 		runtime = _get_runtime(
 			docker_image=docker_image,
@@ -334,12 +353,48 @@ def execute_run_command(
 			env_name=env_name,
 		)
 		result = runtime.exec_command(command=command, timeout_seconds=timeout_seconds)
+		ts_end = time.time()
+		ts_end_iso = datetime.fromtimestamp(ts_end).isoformat()
+
+		logging_errors: List[str] = []
+		record = {
+			"run_id": runtime.run_id,
+			"workspace_dir": str(runtime.active_workspace_dir),
+			"ts_start": ts_start_iso,
+			"ts_end": ts_end_iso,
+			"duration_ms": int((ts_end - ts_start) * 1000),
+			"command": command,
+			"timeout_seconds": timeout_seconds,
+			"timed_out": bool(result.get("timed_out")),
+			"exit_code": result.get("exit_code"),
+			"stdout": result.get("stdout", ""),
+			"stderr": result.get("stderr", ""),
+		}
+		try:
+			append_jsonl(run_logs_dir(runtime.run_id) / "commands.jsonl", record)
+		except Exception as exc:
+			logging_errors.append(f"failed to append commands.jsonl: {exc}")
+
+		try:
+			persist_check_artifacts(
+				command=command,
+				result=result,
+				run_id=runtime.run_id,
+				workspace_dir=runtime.active_workspace_dir,
+				ts_start_iso=ts_start_iso,
+				ts_end_iso=ts_end_iso,
+			)
+		except Exception as exc:
+			logging_errors.append(f"failed to persist check artifacts: {exc}")
 
 		if result["timed_out"]:
-			return (
+			msg = (
 				f"⏰ Timeout: command exceeded {timeout_seconds} seconds. "
 				"Container remains alive and command may still be running."
 			)
+			if logging_errors:
+				msg += "\n⚠️ Logging warnings:\n" + "\n".join(logging_errors)
+			return msg
 
 		output_parts = []
 		if result["stdout"]:
@@ -350,16 +405,24 @@ def execute_run_command(
 
 		if result["exit_code"] == 0:
 			if output:
-				return f"✅ Command executed successfully.\n{output}"
-			return "✅ Command executed successfully."
+				msg = f"✅ Command executed successfully.\n{output}"
+			else:
+				msg = "✅ Command executed successfully."
+			if logging_errors:
+				msg += "\n⚠️ Logging warnings:\n" + "\n".join(logging_errors)
+			return msg
 
 		if output:
-			return f"❌ Command failed (exit code {result['exit_code']}).\n{output}"
-		return f"❌ Command failed (exit code {result['exit_code']})."
+			msg = f"❌ Command failed (exit code {result['exit_code']}).\n{output}"
+		else:
+			msg = f"❌ Command failed (exit code {result['exit_code']})."
+		if logging_errors:
+			msg += "\n⚠️ Logging warnings:\n" + "\n".join(logging_errors)
+		return msg
 	except (DockerException, ValueError) as exc:
 		return f"❌ Docker SDK error: {str(exc)}"
 	except Exception as exc:
-		return f"❌ Internal execution error: {str(exc)}"
+		return f"❌ Internal execution error: {str(exc)}\n{traceback.format_exc()}"
 
 
 def get_runtime_info() -> dict:
@@ -367,6 +430,24 @@ def get_runtime_info() -> dict:
 		if _RUNTIME_SESSION is None:
 			return {}
 		return _RUNTIME_SESSION.get_runtime_info()
+
+
+def get_or_create_runtime_info(
+	docker_image: Optional[str] = None,
+	dockerfile_path: Optional[str] = None,
+	docker_build_context: Optional[str] = None,
+	env_api_base_url: str = "http://host.docker.internal:8000",
+	env_name: Optional[str] = None,
+) -> dict:
+	ensure_workspace_dirs()
+	runtime = _get_runtime(
+		docker_image=docker_image,
+		dockerfile_path=dockerfile_path,
+		docker_build_context=docker_build_context,
+		env_api_base_url=env_api_base_url,
+		env_name=env_name,
+	)
+	return runtime.get_runtime_info()
 
 
 def get_langchain_tools(
@@ -416,5 +497,6 @@ __all__: List[str] = [
 	"ensure_workspace_dirs",
 	"execute_run_command",
 	"get_runtime_info",
+	"get_or_create_runtime_info",
 	"get_langchain_tools",
 ]

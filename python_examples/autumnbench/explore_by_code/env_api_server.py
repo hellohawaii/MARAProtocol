@@ -22,6 +22,13 @@ for path in (str(MARA_ROOT), str(PY_EXAMPLES_DIR), str(AUTUMNBENCH_DIR)):
     if path not in sys.path:
         sys.path.insert(0, path)
 
+try:
+    from .log_utils import ensure_logs_root_dir
+    from .traj_visualization_utils import save_trajectory_visualization
+except ImportError:  # pragma: no cover
+    from log_utils import ensure_logs_root_dir
+    from traj_visualization_utils import save_trajectory_visualization
+
 autumnstdlib = importlib.import_module("autumnbench.autumnstdlib").autumnstdlib
 Interpreter = importlib.import_module("interpreter_module").Interpreter
 
@@ -85,6 +92,7 @@ class EnvSession:
     def _ensure_workspace_dirs(self) -> None:
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
         (self.workspace_dir / "traj").mkdir(parents=True, exist_ok=True)
+        ensure_logs_root_dir()
 
     def _validate_workspace_dir(self, workspace_dir: Path) -> None:
         if workspace_dir == DEFAULT_WORKSPACE_DIR:
@@ -237,6 +245,15 @@ class EnvSession:
             }
 
             out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            try:
+                save_trajectory_visualization(
+                    payload=payload,
+                    out_path=out_path,
+                    run_id=self.current_run_id,
+                )
+            except Exception:
+                # Fail-open: visualization errors should not affect trajectory saving.
+                pass
             return {"success": True}
 
 
