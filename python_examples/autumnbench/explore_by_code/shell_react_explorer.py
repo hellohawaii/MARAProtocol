@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional
 
 from langchain.agents import create_agent
 from langchain_core.callbacks import BaseCallbackHandler
+from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.messages import HumanMessage
 
 _FILE_DIR = Path(__file__).resolve().parent
 _AUTUMNBENCH_DIR = _FILE_DIR.parent
@@ -181,7 +183,8 @@ def run_shell_react_agent(
     docker_image: Optional[str] = None,
     dockerfile_path: Optional[str] = DEFAULT_DOCKERFILE_PATH,
     docker_build_context: Optional[str] = None,
-    env_api_base_url: str = "http://host.docker.internal:8000",
+    env_api_base_url: str = "http://host.docker.internal:8001",
+    hitl_callback: Optional[Any] = None,
 ) -> Dict[str, Any]:
     llm = get_llm(model=llm_model)
     runtime_info = get_or_create_runtime_info(
@@ -199,49 +202,74 @@ def run_shell_react_agent(
         env_api_base_url=env_api_base_url,
         env_name=env_name,
     )
+    checkpointer = MemorySaver()
     agent = create_agent(
         model=llm,
         tools=tools,
         system_prompt=SHELL_REACT_SYSTEM_PROMPT,
+        checkpointer=checkpointer,
     )
 
     user_prompt = build_initial_user_prompt(env_name)
 
     # Persist logs under the same run_id used by llm_workspace_runs.
     run_id = runtime_info.get("run_id")
+    ts = int(time.time() * 1000)
     if run_id:
         transcript_path = (
             _FILE_DIR / "logs" / run_id / f"shell_react_{env_name}_transcript.json"
         ).resolve()
     else:
-        ts = int(time.time() * 1000)
         transcript_path = (
             _FILE_DIR / "logs" / f"shell_react_{env_name}_{ts}_transcript.json"
         ).resolve()
     detail_log_dir = transcript_path.with_suffix("") / "details"
     trace_cb = _JsonTraceCallback(detail_log_dir)
 
+    config = {"configurable": {"thread_id": run_id or str(ts)}, "recursion_limit": max_turns, "callbacks": [trace_cb]}
+
     final_messages: List[Any] = []
     stream_event_count = 0
-    for event in agent.stream(
-        {"messages": [{"role": "user", "content": user_prompt}]},
-        config={"recursion_limit": max_turns, "callbacks": [trace_cb]},
-        stream_mode="values",
-    ):
-        stream_event_count += 1
-        if isinstance(event, dict) and "messages" in event:
-            final_messages = event.get("messages", []) or final_messages
-            _write_json(
-                detail_log_dir / "stream_events" / f"{stream_event_count:04d}.json",
-                {
-                    "stream_event_idx": stream_event_count,
-                    "num_messages": len(final_messages),
-                    "last_message": (
-                        _message_to_jsonable(final_messages[-1]) if final_messages else None
-                    ),
-                    "messages": _messages_to_jsonable(final_messages),
-                },
-            )
+    
+    inputs = {"messages": [{"role": "user", "content": user_prompt}]}
+    
+    while True:
+        hitl_triggered = False
+        for event in agent.stream(
+            inputs,
+            config=config,
+            stream_mode="values",
+        ):
+            stream_event_count += 1
+            if isinstance(event, dict) and "messages" in event:
+                final_messages = event.get("messages", []) or final_messages
+                _write_json(
+                    detail_log_dir / "stream_events" / f"{stream_event_count:04d}.json",
+                    {
+                        "stream_event_idx": stream_event_count,
+                        "num_messages": len(final_messages),
+                        "last_message": (
+                            _message_to_jsonable(final_messages[-1]) if final_messages else None
+                        ),
+                        "messages": _messages_to_jsonable(final_messages),
+                    },
+                )
+            
+            # Hit HITL every 5 events
+            if stream_event_count % 5 == 0 and hitl_callback is not None:
+                hitl_triggered = True
+                break
+        
+        if hitl_triggered:
+            # Call HITL
+            user_text = hitl_callback(final_messages, runtime_info.get("workspace_dir"))
+            if user_text and str(user_text).strip():
+                agent.update_state(config, {"messages": [HumanMessage(content=str(user_text))]})
+            # Resume with None as inputs
+            inputs = None
+        else:
+            # Agent finished
+            break
 
     final_response = ""
     if final_messages:
@@ -312,7 +340,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--env-api-base-url",
-        default="http://host.docker.internal:8000",
+        default="http://host.docker.internal:8001",
         help="Base URL for env API server reachable from container.",
     )
     return parser

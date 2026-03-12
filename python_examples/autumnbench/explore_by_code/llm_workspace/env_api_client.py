@@ -6,7 +6,7 @@ from urllib import request, error
 
 class RemoteEnvWrapper:
     def __init__(self, base_url: Optional[str] = None, timeout_seconds: int = 30):
-        self.base_url = (base_url or os.getenv("ENV_API_BASE_URL") or "http://host.docker.internal:8000").rstrip("/")
+        self.base_url = (base_url or os.getenv("ENV_API_BASE_URL") or "http://host.docker.internal:8001").rstrip("/")
         self.timeout_seconds = timeout_seconds
 
     def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:

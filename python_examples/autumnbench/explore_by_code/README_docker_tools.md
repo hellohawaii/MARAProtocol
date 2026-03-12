@@ -22,7 +22,7 @@ python python_examples/autumnbench/explore_by_code/env_api_server.py
 The API server dependencies are expected to come from the outer environment
 (for example, already installed via `AutumnWeb/requirements.txt` in the outer Docker image).
 
-By default, it listens on `0.0.0.0:8000`.
+By default, it listens on `0.0.0.0:8001`.
 
 ## 2) Access the environment API inside Docker
 
@@ -123,4 +123,4 @@ python python_examples/autumnbench/explore_by_code/shell_react_explorer.py 7XF97
 Optional flags:
 - `--llm-model <model_id>`: defaults to `google/gemini-2.5-pro`
 - `--dockerfile-path` and `--docker-build-context`: custom tool image build
-- `--env-api-base-url`: defaults to `http://host.docker.internal:8000`
+- `--env-api-base-url`: defaults to `http://host.docker.internal:8001`

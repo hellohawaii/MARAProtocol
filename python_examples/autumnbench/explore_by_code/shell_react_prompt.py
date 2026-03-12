@@ -74,6 +74,7 @@ Use per-trajectory statistics to locate weak trajectories and guide further expl
 
 Important coding constraints:
 - Your Python file MUST define callable init_state and predict_dynamics.
+- You MUST ALWAYS write your current best model to a fixed path: `/workspace/current_model.py`. This allows the user to see your progress.
 - Function signatures:
   - def init_state():
   - def predict_dynamics(state, hidden_state, action):

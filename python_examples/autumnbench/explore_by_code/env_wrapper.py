@@ -139,7 +139,7 @@ class _DockerRuntime:
 		(self.active_workspace_dir / "traj").mkdir(parents=True, exist_ok=True)
 
 	def _set_env_api_workspace(self) -> None:
-		url = "http://127.0.0.1:8000/set_workspace"
+		url = "http://127.0.0.1:8001/set_workspace"
 		payload = {
 			"workspace_dir": str(self.active_workspace_dir),
 			"run_id": self.run_id,
@@ -171,7 +171,7 @@ class _DockerRuntime:
 	def _set_env_api_env_name(self) -> None:
 		if not self.env_name:
 			return
-		url = "http://127.0.0.1:8000/_set_env_name"
+		url = "http://127.0.0.1:8001/_set_env_name"
 		payload = {"env_name": self.env_name}
 		body = json.dumps(payload).encode("utf-8")
 		req = urlrequest.Request(
@@ -338,7 +338,7 @@ def execute_run_command(
 	docker_image: Optional[str] = None,
 	dockerfile_path: Optional[str] = None,
 	docker_build_context: Optional[str] = None,
-	env_api_base_url: str = "http://host.docker.internal:8000",
+	env_api_base_url: str = "http://host.docker.internal:8001",
 	env_name: Optional[str] = None,
 ) -> str:
 	ensure_workspace_dirs()
@@ -436,7 +436,7 @@ def get_or_create_runtime_info(
 	docker_image: Optional[str] = None,
 	dockerfile_path: Optional[str] = None,
 	docker_build_context: Optional[str] = None,
-	env_api_base_url: str = "http://host.docker.internal:8000",
+	env_api_base_url: str = "http://host.docker.internal:8001",
 	env_name: Optional[str] = None,
 ) -> dict:
 	ensure_workspace_dirs()
@@ -455,7 +455,7 @@ def get_langchain_tools(
 	timeout_seconds: int = 15,
 	dockerfile_path: Optional[str] = None,
 	docker_build_context: Optional[str] = None,
-	env_api_base_url: str = "http://host.docker.internal:8000",
+	env_api_base_url: str = "http://host.docker.internal:8001",
 	env_name: Optional[str] = None,
 ):
 	try:
