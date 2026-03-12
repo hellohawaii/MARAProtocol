@@ -14,11 +14,13 @@ from typing import Any, Dict, List, Optional
 
 from langchain.agents import create_agent
 from langchain_core.callbacks import BaseCallbackHandler
+from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.messages import HumanMessage
 
 _FILE_DIR = Path(__file__).resolve().parent
 _AUTUMNBENCH_DIR = _FILE_DIR.parent
 _MARA_ROOT = _AUTUMNBENCH_DIR.parents[1]
-for _p in [str(_AUTUMNBENCH_DIR), str(_MARA_ROOT)]:
+for _p in [str(_FILE_DIR), str(_AUTUMNBENCH_DIR), str(_MARA_ROOT)]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -172,17 +174,16 @@ def _messages_to_jsonable(messages: List[Any]) -> List[Dict[str, Any]]:
     return rows
 
 
-def run_shell_react_agent(
+def create_shell_react_agent(
     env_name: str,
-    *,
     llm_model: str = "google/gemini-2.5-pro",
-    max_turns: int = 120,
     timeout_seconds: int = 30,
     docker_image: Optional[str] = None,
     dockerfile_path: Optional[str] = DEFAULT_DOCKERFILE_PATH,
     docker_build_context: Optional[str] = None,
     env_api_base_url: str = "http://host.docker.internal:8000",
-) -> Dict[str, Any]:
+    checkpointer: Optional[Any] = None,
+):
     llm = get_llm(model=llm_model)
     runtime_info = get_or_create_runtime_info(
         docker_image=docker_image,
@@ -203,6 +204,30 @@ def run_shell_react_agent(
         model=llm,
         tools=tools,
         system_prompt=SHELL_REACT_SYSTEM_PROMPT,
+        checkpointer=checkpointer,
+    )
+    return agent, runtime_info
+
+
+def run_shell_react_agent(
+    env_name: str,
+    *,
+    llm_model: str = "google/gemini-2.5-pro",
+    max_turns: int = 120,
+    timeout_seconds: int = 30,
+    docker_image: Optional[str] = None,
+    dockerfile_path: Optional[str] = DEFAULT_DOCKERFILE_PATH,
+    docker_build_context: Optional[str] = None,
+    env_api_base_url: str = "http://host.docker.internal:8000",
+) -> Dict[str, Any]:
+    agent, runtime_info = create_shell_react_agent(
+        env_name=env_name,
+        llm_model=llm_model,
+        timeout_seconds=timeout_seconds,
+        docker_image=docker_image,
+        dockerfile_path=dockerfile_path,
+        docker_build_context=docker_build_context,
+        env_api_base_url=env_api_base_url,
     )
 
     user_prompt = build_initial_user_prompt(env_name)
