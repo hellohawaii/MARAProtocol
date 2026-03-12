@@ -48,8 +48,9 @@ RemoteEnvWrapper method semantics:
 - step(action: str) -> dict
   Executes one valid action and returns the next visible state dict.
   For click actions use the exact format: "click x y" (for example: "click 3 4").
-- save_trajectory(filename: Optional[str] = None) -> dict
-  Persists the currently collected trajectory into traj/...
+- save_trajectory(filename: Optional[str] = None, dir: Optional[str] = None) -> dict
+  Persists the currently collected trajectory. By default, saves to traj/...
+  Use dir="tmp_traj" to save temporary experimental trajectories.
   Use this to store data for later checking and iteration.
   Returns a success indicator object (for example: {"success": true}).
 

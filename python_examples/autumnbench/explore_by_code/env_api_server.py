@@ -62,6 +62,7 @@ class StepRequest(BaseModel):
 
 class SaveTrajectoryRequest(BaseModel):
     filename: Optional[str] = Field(default=None, description="Optional base filename without path")
+    dir: Optional[str] = Field(default=None, description="Optional directory name under workspace_dir")
 
 
 class SetWorkspaceRequest(BaseModel):
@@ -217,12 +218,13 @@ class EnvSession:
 
             return next_state
 
-    def save_trajectory(self, filename: Optional[str]) -> Dict[str, Any]:
+    def save_trajectory(self, filename: Optional[str], dir: Optional[str] = None) -> Dict[str, Any]:
         with self._lock:
             if self.env_name is None or self.data_dir is None:
                 raise RuntimeError("Environment not initialized. Call reset first.")
 
-            traj_dir = self.workspace_dir / "traj"
+            target_dir_name = dir if dir else "traj"
+            traj_dir = self.workspace_dir / target_dir_name
             traj_dir.mkdir(parents=True, exist_ok=True)
 
             if filename:
@@ -308,7 +310,7 @@ def step_env(payload: StepRequest) -> Dict[str, Any]:
 @app.post("/save_trajectory")
 def save_trajectory(payload: SaveTrajectoryRequest) -> Dict[str, Any]:
     try:
-        return session.save_trajectory(payload.filename)
+        return session.save_trajectory(payload.filename, payload.dir)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

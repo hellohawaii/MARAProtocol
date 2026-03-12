@@ -38,8 +38,10 @@ class RemoteEnvWrapper:
     def step(self, action: str) -> Dict[str, Any]:
         return self._post("/step", {"action": action})
 
-    def save_trajectory(self, filename: Optional[str] = None) -> Dict[str, Any]:
+    def save_trajectory(self, filename: Optional[str] = None, dir: Optional[str] = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {}
         if filename:
             payload["filename"] = filename
+        if dir:
+            payload["dir"] = dir
         return self._post("/save_trajectory", payload)

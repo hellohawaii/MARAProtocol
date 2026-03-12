@@ -9,7 +9,7 @@ import traceback
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
@@ -38,8 +38,10 @@ WORKSPACE_DIR = TEMPLATE_WORKSPACE_DIR
 TRAJ_DIR = TEMPLATE_WORKSPACE_DIR / "traj"
 DEFAULT_DOCKER_IMAGE = "python:3.11-slim"
 _RUNTIME_LOCK = threading.Lock()
-_RUNTIME_SESSION: Optional["_DockerRuntime"] = None
-_RUNTIME_KEY: Optional[tuple] = None
+_RUNTIME_SESSIONS: Dict[
+	Tuple[Optional[str], Optional[str], Optional[str], str, Optional[str], Optional[str]],
+	"_DockerRuntime",
+] = {}
 
 
 def ensure_workspace_dirs() -> None:
@@ -294,26 +296,44 @@ class _DockerRuntime:
 		}
 
 
+def _make_runtime_request_key(
+	docker_image: Optional[str],
+	dockerfile_path: Optional[str],
+	docker_build_context: Optional[str],
+	env_api_base_url: str,
+	env_name: Optional[str],
+	runtime_key: Optional[str],
+) -> Tuple[Optional[str], Optional[str], Optional[str], str, Optional[str], Optional[str]]:
+	return (
+		docker_image,
+		str(Path(dockerfile_path).resolve()) if dockerfile_path else None,
+		str(Path(docker_build_context).resolve()) if docker_build_context else None,
+		env_api_base_url,
+		env_name,
+		runtime_key,
+	)
+
+
 def _get_runtime(
 	docker_image: Optional[str],
 	dockerfile_path: Optional[str],
 	docker_build_context: Optional[str],
 	env_api_base_url: str,
 	env_name: Optional[str],
+	runtime_key: Optional[str] = None,
 ) -> _DockerRuntime:
-	global _RUNTIME_SESSION
-	global _RUNTIME_KEY
-	requested_key = (
-		docker_image,
-		str(Path(dockerfile_path).resolve()) if dockerfile_path else None,
-		str(Path(docker_build_context).resolve()) if docker_build_context else None,
-		env_api_base_url,
-		env_name,
+	requested_key = _make_runtime_request_key(
+		docker_image=docker_image,
+		dockerfile_path=dockerfile_path,
+		docker_build_context=docker_build_context,
+		env_api_base_url=env_api_base_url,
+		env_name=env_name,
+		runtime_key=runtime_key,
 	)
 	with _RUNTIME_LOCK:
-		if _RUNTIME_SESSION is not None and _RUNTIME_KEY == requested_key:
-			return _RUNTIME_SESSION
-
+		existing = _RUNTIME_SESSIONS.get(requested_key)
+		if existing is not None:
+			return existing
 		candidate = _DockerRuntime(
 			docker_image=docker_image,
 			dockerfile_path=dockerfile_path,
@@ -321,15 +341,30 @@ def _get_runtime(
 			env_api_base_url=env_api_base_url,
 			env_name=env_name,
 		)
-		if _RUNTIME_SESSION is None:
-			_RUNTIME_SESSION = candidate
-			_RUNTIME_KEY = requested_key
-			return _RUNTIME_SESSION
+		_RUNTIME_SESSIONS[requested_key] = candidate
+		return candidate
 
-		_RUNTIME_SESSION.close()
-		_RUNTIME_SESSION = candidate
-		_RUNTIME_KEY = requested_key
-		return _RUNTIME_SESSION
+
+def close_runtime(
+	docker_image: Optional[str] = None,
+	dockerfile_path: Optional[str] = None,
+	docker_build_context: Optional[str] = None,
+	env_api_base_url: str = "http://host.docker.internal:8000",
+	env_name: Optional[str] = None,
+	runtime_key: Optional[str] = None,
+) -> None:
+	requested_key = _make_runtime_request_key(
+		docker_image=docker_image,
+		dockerfile_path=dockerfile_path,
+		docker_build_context=docker_build_context,
+		env_api_base_url=env_api_base_url,
+		env_name=env_name,
+		runtime_key=runtime_key,
+	)
+	with _RUNTIME_LOCK:
+		runtime = _RUNTIME_SESSIONS.pop(requested_key, None)
+	if runtime is not None:
+		runtime.close()
 
 
 def execute_run_command(
@@ -340,6 +375,7 @@ def execute_run_command(
 	docker_build_context: Optional[str] = None,
 	env_api_base_url: str = "http://host.docker.internal:8000",
 	env_name: Optional[str] = None,
+	runtime_key: Optional[str] = None,
 ) -> str:
 	ensure_workspace_dirs()
 	ts_start = time.time()
@@ -351,6 +387,7 @@ def execute_run_command(
 			docker_build_context=docker_build_context,
 			env_api_base_url=env_api_base_url,
 			env_name=env_name,
+			runtime_key=runtime_key,
 		)
 		result = runtime.exec_command(command=command, timeout_seconds=timeout_seconds)
 		ts_end = time.time()
@@ -425,11 +462,25 @@ def execute_run_command(
 		return f"❌ Internal execution error: {str(exc)}\n{traceback.format_exc()}"
 
 
-def get_runtime_info() -> dict:
+def get_runtime_info(
+	docker_image: Optional[str] = None,
+	dockerfile_path: Optional[str] = None,
+	docker_build_context: Optional[str] = None,
+	env_api_base_url: str = "http://host.docker.internal:8000",
+	env_name: Optional[str] = None,
+	runtime_key: Optional[str] = None,
+) -> dict:
+	requested_key = _make_runtime_request_key(
+		docker_image=docker_image,
+		dockerfile_path=dockerfile_path,
+		docker_build_context=docker_build_context,
+		env_api_base_url=env_api_base_url,
+		env_name=env_name,
+		runtime_key=runtime_key,
+	)
 	with _RUNTIME_LOCK:
-		if _RUNTIME_SESSION is None:
-			return {}
-		return _RUNTIME_SESSION.get_runtime_info()
+		runtime = _RUNTIME_SESSIONS.get(requested_key)
+	return runtime.get_runtime_info() if runtime is not None else {}
 
 
 def get_or_create_runtime_info(
@@ -438,6 +489,7 @@ def get_or_create_runtime_info(
 	docker_build_context: Optional[str] = None,
 	env_api_base_url: str = "http://host.docker.internal:8000",
 	env_name: Optional[str] = None,
+	runtime_key: Optional[str] = None,
 ) -> dict:
 	ensure_workspace_dirs()
 	runtime = _get_runtime(
@@ -446,6 +498,7 @@ def get_or_create_runtime_info(
 		docker_build_context=docker_build_context,
 		env_api_base_url=env_api_base_url,
 		env_name=env_name,
+		runtime_key=runtime_key,
 	)
 	return runtime.get_runtime_info()
 
@@ -457,6 +510,7 @@ def get_langchain_tools(
 	docker_build_context: Optional[str] = None,
 	env_api_base_url: str = "http://host.docker.internal:8000",
 	env_name: Optional[str] = None,
+	runtime_key: Optional[str] = None,
 ):
 	try:
 		from langchain_core.tools import StructuredTool
@@ -474,6 +528,7 @@ def get_langchain_tools(
 			docker_build_context=docker_build_context,
 			env_api_base_url=env_api_base_url,
 			env_name=env_name,
+			runtime_key=runtime_key,
 		)
 
 	run_command_tool = StructuredTool.from_function(
@@ -496,6 +551,7 @@ __all__: List[str] = [
 	"DEFAULT_DOCKER_IMAGE",
 	"ensure_workspace_dirs",
 	"execute_run_command",
+	"close_runtime",
 	"get_runtime_info",
 	"get_or_create_runtime_info",
 	"get_langchain_tools",
