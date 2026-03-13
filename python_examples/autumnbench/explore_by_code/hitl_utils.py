@@ -29,9 +29,7 @@ def evaluate_model_on_trajectories(code_str: str, traj_dir: str) -> Dict[str, An
     if not trajectories:
         return {"success": False, "error": "No trajectories found."}
 
-    init_state_func, predict_dynamics_func, error = _compile_functions(code_str)
-    if error:
-        return {"success": False, "error": error}
+    init_state_func, predict_dynamics_func, compile_error = _compile_functions(code_str)
 
     results = []
 
@@ -42,20 +40,6 @@ def evaluate_model_on_trajectories(code_str: str, traj_dir: str) -> Dict[str, An
         if not transitions:
             continue
             
-        _, hidden_state, error = _call_init_state(init_state_func)
-        if error:
-            return {"success": False, "error": f"Trajectory {traj_name}: " + error}
-
-        correct_predictions = 0
-        total_predictions = len(transitions)
-        
-        last_predicted_visible_state = None
-        
-        # We need to build framesGT and framesPred for the frontend
-        # framesGT: [initial_state, new_state_1, new_state_2, ...]
-        # framesPred: [initial_state, pred_state_1, pred_state_2, ...]
-        # frameActions: [action_1, action_2, ...]
-        
         framesGT = []
         framesPred = []
         frameActions = []
@@ -65,16 +49,9 @@ def evaluate_model_on_trajectories(code_str: str, traj_dir: str) -> Dict[str, An
         framesGT.append({"rawFrame": initial_state})
         framesPred.append({"rawFrame": initial_state})
 
+        # Pre-populate GT and Actions
         for i, transition in enumerate(transitions):
-            if i == 0:
-                state = transition["state"]
-            else:
-                state = last_predicted_visible_state
-
             action_str = transition["action"]
-            
-            # Convert action_str to frontend action format if needed
-            # Frontend expects: { type: 'click', x: 1, y: 2 } or { type: 'left' }
             action_obj = {"type": "noop"}
             if action_str in ["left", "right", "up", "down", "noop"]:
                 action_obj = {"type": action_str}
@@ -82,33 +59,56 @@ def evaluate_model_on_trajectories(code_str: str, traj_dir: str) -> Dict[str, An
                 parts = action_str.split()
                 if len(parts) >= 3:
                     action_obj = {"type": "click", "x": int(parts[1]), "y": int(parts[2])}
-            
             frameActions.append(action_obj)
+            framesGT.append({"rawFrame": transition["new_state"]})
 
-            # The code expects action as a string (as in check_traj_example.py)
-            next_state, hidden_state, error = _call_predict(
-                predict_dynamics_func,
-                state,
-                hidden_state,
-                action_str,
-            )
-            
+        correct_predictions = 0
+        total_predictions = len(transitions)
+        
+        if compile_error:
+            for _ in transitions:
+                framesPred.append({"rawFrame": None, "error": compile_error, "is_correct": False})
+            accuracy = 0
+        else:
+            _, hidden_state, error = _call_init_state(init_state_func)
             if error:
-                # If error, we append the error state or just break
-                framesPred.append({"rawFrame": None, "error": error})
-                break
+                for _ in transitions:
+                    framesPred.append({"rawFrame": None, "error": error, "is_correct": False})
+                accuracy = 0
+            else:
+                last_predicted_visible_state = None
+                for i, transition in enumerate(transitions):
+                    if i == 0:
+                        state = transition["state"]
+                    else:
+                        state = last_predicted_visible_state
 
-            last_predicted_visible_state = next_state
-            ground_truth_next_state = transition["new_state"]
-            
-            framesGT.append({"rawFrame": ground_truth_next_state})
-            framesPred.append({"rawFrame": next_state})
-            
-            is_correct = compare_visible_states(next_state, ground_truth_next_state)
-            if is_correct:
-                correct_predictions += 1
+                    action_str = transition["action"]
+                    
+                    next_state, hidden_state, error = _call_predict(
+                        predict_dynamics_func,
+                        state,
+                        hidden_state,
+                        action_str,
+                    )
+                    
+                    if error:
+                        framesPred.append({"rawFrame": None, "error": error, "is_correct": False})
+                        # Fill remaining with error
+                        for _ in range(i + 1, len(transitions)):
+                            framesPred.append({"rawFrame": None, "error": "Previous step failed", "is_correct": False})
+                        break
 
-        accuracy = (correct_predictions / total_predictions) if total_predictions > 0 else 0
+                    last_predicted_visible_state = next_state
+                    ground_truth_next_state = transition["new_state"]
+                    
+                    is_correct = compare_visible_states(next_state, ground_truth_next_state)
+                    framesPred.append({"rawFrame": next_state, "is_correct": is_correct})
+                    
+                    if is_correct:
+                        correct_predictions += 1
+
+                accuracy = (correct_predictions / total_predictions) if total_predictions > 0 else 0
         
         results.append({
             "traj_name": traj_name,
@@ -122,6 +122,7 @@ def evaluate_model_on_trajectories(code_str: str, traj_dir: str) -> Dict[str, An
 
     return {
         "success": True,
-        "results": results
+        "results": results,
+        "compile_error": compile_error
     }
 

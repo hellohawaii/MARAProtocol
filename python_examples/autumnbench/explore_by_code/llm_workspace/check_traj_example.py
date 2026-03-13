@@ -32,9 +32,33 @@ class redirect_stdin(contextlib._RedirectStream):
 def time_limit(seconds):
     def signal_handler(signum, frame):
         raise TimeoutException("Timed out!")
+    
+    # Check if we are in the main thread
+    import threading
+    if threading.current_thread() is not threading.main_thread():
+        # We are in a background thread. signal.setitimer only works in main thread.
+        # But we can't easily interrupt a thread in Python.
+        # For now, we will just yield, but ideally we should use multiprocessing.
+        # Actually, let's use a trace function to implement timeout in thread.
+        import sys
+        import time
+        start_time = time.time()
+        def trace_calls(frame, event, arg):
+            if time.time() - start_time > seconds:
+                raise TimeoutException("Timed out!")
+            return trace_calls
+        
+        old_trace = sys.gettrace()
+        sys.settrace(trace_calls)
+        try:
+            yield
+        finally:
+            sys.settrace(old_trace)
+        return
+
     signal.setitimer(signal.ITIMER_REAL, seconds)
-    signal.signal(signal.SIGALRM, signal_handler)
     try:
+        signal.signal(signal.SIGALRM, signal_handler)
         yield
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)

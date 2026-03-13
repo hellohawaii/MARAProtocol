@@ -48,20 +48,11 @@ def _to_jsonable(obj: Any) -> Any:
     if isinstance(obj, (str, int, float, bool)) or obj is None:
         return obj
     if hasattr(obj, "model_dump"):
-        try:
-            return _to_jsonable(obj.model_dump())
-        except Exception:
-            pass
+        return _to_jsonable(obj.model_dump())
     if hasattr(obj, "dict"):
-        try:
-            return _to_jsonable(obj.dict())
-        except Exception:
-            pass
+        return _to_jsonable(obj.dict())
     if hasattr(obj, "__dict__"):
-        try:
-            return _to_jsonable(vars(obj))
-        except Exception:
-            pass
+        return _to_jsonable(vars(obj))
     return str(obj)
 
 
@@ -262,11 +253,14 @@ def run_shell_react_agent(
         
         if hitl_triggered:
             # Call HITL
+            print(f"\n[HITL] Agent paused at event {stream_event_count}. Waiting for user input...", flush=True)
             user_text = hitl_callback(final_messages, runtime_info.get("workspace_dir"))
             if user_text and str(user_text).strip():
-                agent.update_state(config, {"messages": [HumanMessage(content=str(user_text))]})
-            # Resume with None as inputs
-            inputs = None
+                print(f"[HITL] Received user input: {user_text}", flush=True)
+                inputs = {"messages": [HumanMessage(content=str(user_text))]}
+            else:
+                print("[HITL] Received empty input, resuming without adding user message.", flush=True)
+                inputs = None
         else:
             # Agent finished
             break
