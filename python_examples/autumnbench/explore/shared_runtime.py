@@ -120,6 +120,9 @@ class WorkflowState(TypedDict):
     repair_runtime_key: Optional[str]
     session_code_candidate: Optional[str]
 
+    # Logging directory passed down the graph
+    current_log_dir: str
+
 
 def find_program_path(data_dir: str, env_name: str) -> str:
     for subdir in ["tests", "programs", ""]:

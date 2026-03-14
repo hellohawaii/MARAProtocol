@@ -33,8 +33,11 @@ def run_logs_dir(run_id: Optional[str]) -> Path:
     return out_dir
 
 
-def timeline_dir(run_id: Optional[str]) -> Path:
-    out_dir = run_logs_dir(run_id) / "timeline"
+def timeline_dir(run_id: Optional[str], log_dir: Optional[str] = None) -> Path:
+    if log_dir:
+        out_dir = Path(log_dir) / "code" / "timeline"
+    else:
+        out_dir = run_logs_dir(run_id) / "timeline"
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
 
@@ -56,8 +59,8 @@ def _next_prefixed_index(parent_dir: Path) -> int:
     return max_idx + 1
 
 
-def allocate_timeline_index(run_id: Optional[str]) -> int:
-    tdir = timeline_dir(run_id)
+def allocate_timeline_index(run_id: Optional[str], log_dir: Optional[str] = None) -> int:
+    tdir = timeline_dir(run_id, log_dir=log_dir)
     lock_path = tdir / ".index.lock"
     counter_path = tdir / ".index.counter"
 
@@ -91,8 +94,9 @@ def timeline_copy_file(
     stem: str,
     source_path: Path,
     suffix: str,
+    log_dir: Optional[str] = None,
 ) -> Path:
-    dest = timeline_dir(run_id) / f"{index}_{safe_name(stem)}{suffix}"
+    dest = timeline_dir(run_id, log_dir=log_dir) / f"{index}_{safe_name(stem)}{suffix}"
     shutil.copy2(source_path, dest)
     return dest
 
@@ -103,8 +107,9 @@ def timeline_write_json(
     index: int,
     stem: str,
     payload: Dict[str, Any],
+    log_dir: Optional[str] = None,
 ) -> Path:
-    dest = timeline_dir(run_id) / f"{index}_{safe_name(stem)}.json"
+    dest = timeline_dir(run_id, log_dir=log_dir) / f"{index}_{safe_name(stem)}.json"
     dest.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return dest
 
@@ -115,8 +120,9 @@ def timeline_write_python_snapshot(
     index: int,
     stem: str,
     source_path: Optional[Path],
+    log_dir: Optional[str] = None,
 ) -> Path:
-    dest = timeline_dir(run_id) / f"{index}_{safe_name(stem)}.py"
+    dest = timeline_dir(run_id, log_dir=log_dir) / f"{index}_{safe_name(stem)}.py"
     if source_path is not None and source_path.is_file():
         shutil.copy2(source_path, dest)
         return dest
@@ -173,6 +179,7 @@ def persist_check_artifacts(
     workspace_dir: Path,
     ts_start_iso: str,
     ts_end_iso: str,
+    log_dir: Optional[str] = None,
 ) -> None:
     match = _CHECK_TRAJ_PATTERN.search(command)
     if not match:
@@ -183,7 +190,10 @@ def persist_check_artifacts(
     code_path = resolve_workspace_path(workspace_dir, code_path_token)
     traj_path = resolve_workspace_path(workspace_dir, traj_path_token)
 
-    checks_root = run_logs_dir(run_id) / "checks"
+    if log_dir:
+        checks_root = Path(log_dir) / "code" / "checks"
+    else:
+        checks_root = run_logs_dir(run_id) / "checks"
     checks_root.mkdir(parents=True, exist_ok=True)
     seq = _next_prefixed_index(checks_root)
     event_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -228,16 +238,18 @@ def persist_check_artifacts(
 
     # Unified timeline artifacts with the same sequence id.
     timeline_stem = safe_name(code_path.stem if code_path.suffix else code_path.name)
-    timeline_idx = allocate_timeline_index(run_id)
+    timeline_idx = allocate_timeline_index(run_id, log_dir=log_dir)
     timeline_write_python_snapshot(
         run_id=run_id,
         index=timeline_idx,
         stem=timeline_stem,
         source_path=code_path if code_path.is_file() else None,
+        log_dir=log_dir,
     )
     timeline_write_json(
         run_id=run_id,
         index=timeline_idx,
         stem=timeline_stem,
         payload=result_payload,
+        log_dir=log_dir,
     )

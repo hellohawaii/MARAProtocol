@@ -201,6 +201,8 @@ def run_collect_agent(
     cleanup_runtime: bool = False,
     log_file_path: str = "/workspace/exploration_log.jsonl",
     system_prompt: Optional[str] = None,
+    log_dir: Optional[str] = None,
+    callbacks: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     actual_runtime_key = runtime_key
     try:
@@ -220,6 +222,7 @@ def run_collect_agent(
             env_api_base_url=env_api_base_url,
             env_name=env_name,
             runtime_key=actual_runtime_key,
+            log_dir=log_dir,
         )
         agent = create_agent(
             model=llm,
@@ -250,9 +253,13 @@ def run_collect_agent(
         )
 
         final_messages: List[Any] = []
+        stream_config = {"recursion_limit": 5000}
+        if callbacks:
+            stream_config["callbacks"] = callbacks
+            
         for event in agent.stream(
             {"messages": [{"role": "user", "content": user_prompt}]},
-            config={"recursion_limit": 5000},
+            config=stream_config,
             stream_mode="values",
         ):
             if isinstance(event, dict) and "messages" in event:

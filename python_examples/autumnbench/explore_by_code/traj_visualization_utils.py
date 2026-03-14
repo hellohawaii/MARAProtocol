@@ -98,8 +98,12 @@ def save_trajectory_visualization(
     payload: Dict[str, Any],
     out_path: Path,
     run_id: Optional[str],
+    log_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
-    run_dir = run_logs_dir(run_id)
+    if log_dir:
+        run_dir = Path(log_dir)
+    else:
+        run_dir = run_logs_dir(run_id)
     traj_stem = safe_name(out_path.stem)
     traj_root = run_dir / "traj"
     traj_root.mkdir(parents=True, exist_ok=True)
@@ -149,13 +153,14 @@ def save_trajectory_visualization(
                 optimize=False,
             )
             gif_created = True
-            timeline_idx = allocate_timeline_index(run_id)
+            timeline_idx = allocate_timeline_index(run_id, log_dir=log_dir)
             timeline_copy_file(
                 run_id=run_id,
                 index=timeline_idx,
                 stem=traj_stem,
                 source_path=gif_path,
                 suffix=".gif",
+                log_dir=log_dir,
             )
 
     return {

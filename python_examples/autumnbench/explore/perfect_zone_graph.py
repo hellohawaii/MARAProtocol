@@ -17,6 +17,8 @@ from explore_by_code.env_wrapper import get_langchain_tools, get_or_create_runti
 from runtime_utils import message_content_to_text
 from langchain.agents import create_agent
 
+from log_manager import create_subgraph_dir, create_node_dir, NodeLoggingCallbackHandler
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,12 +33,17 @@ class PerfectZoneState(TypedDict):
     explored_round_count: int # Number of completed perfect-zone exploration rounds.
     stop_exploration_early: bool # Early-stop flag decided by the question proposer.
 
+    current_log_dir: str # Logging directory passed down the graph
+
 
 def create_perfect_zone_graph(llm):
     def _cfg(state: PerfectZoneState, section: str) -> Dict[str, Any]:
         return dict((state.get("config") or {}).get(section, {}))
 
     def decide_stop_node(state: PerfectZoneState) -> Dict[str, Any]:
+        node_dir = create_node_dir(state.get("current_log_dir", ""), "decide_stop")
+        handler = NodeLoggingCallbackHandler(node_dir)
+        
         code = (state.get("code") or "").strip()
         if not code:
             logger.info("PerfectZone decide_stop: No code available, forcing CONTINUE.")
@@ -67,6 +74,7 @@ def create_perfect_zone_graph(llm):
             dockerfile_path=DEFAULT_DOCKERFILE_PATH,
             env_name=env_name,
             runtime_key=runtime_key,
+            log_dir=node_dir,
         )
         system_prompt = """\
 You are an autonomous exploration decision maker operating inside Docker.
@@ -116,7 +124,7 @@ If the exploration is sufficient and covers enough edge cases, you MUST output e
         final_messages = []
         for event in agent.stream(
             {"messages": [{"role": "user", "content": user_prompt}]},
-            config={"recursion_limit": 5000},
+            config={"recursion_limit": 5000, "callbacks": [handler]},
             stream_mode="values",
         ):
             if isinstance(event, dict) and "messages" in event:
@@ -138,6 +146,9 @@ If the exploration is sufficient and covers enough edge cases, you MUST output e
         return "collect_trajectory"
 
     def collect_trajectory_node(state: PerfectZoneState) -> Dict[str, Any]:
+        node_dir = create_node_dir(state.get("current_log_dir", ""), "collect_trajectory")
+        handler = NodeLoggingCallbackHandler(node_dir)
+        
         global_cfg = _cfg(state, "global_config")
         budget_cfg = _cfg(state, "budget")
         perfect_cfg = _cfg(state, "perfect_zone")
@@ -165,6 +176,8 @@ If the exploration is sufficient and covers enough edge cases, you MUST output e
             timeout_seconds=int(perfect_cfg.get("shell_command_timeout_seconds", 30)),
             runtime_key="perfect-zone",
             log_file_path="/workspace/exploration_log.json",
+            log_dir=node_dir,
+            callbacks=[handler],
         )
         trajectories = list(collect_out.get("trajectories", []))
         if not trajectories:
@@ -180,6 +193,8 @@ If the exploration is sufficient and covers enough edge cases, you MUST output e
         }
 
     def validate_with_code_node(state: PerfectZoneState) -> Dict[str, Any]:
+        node_dir = create_node_dir(state.get("current_log_dir", ""), "validate_with_code")
+        
         code = (state.get("code") or "").strip()
         latest = list(state.get("new_trajectories", []))
         if not code or not latest:
@@ -225,6 +240,9 @@ If the exploration is sufficient and covers enough edge cases, you MUST output e
 
 
 def run_perfect_zone_subgraph(llm, state: WorkflowState) -> Dict[str, Any]:
+    parent_log_dir = state.get("current_log_dir", "")
+    subgraph_dir = create_subgraph_dir(parent_log_dir, "perfect_zone") if parent_log_dir else ""
+    
     graph = create_perfect_zone_graph(llm)
     config = dict(state.get("config") or {})
     code = state.get("code", "")
@@ -237,11 +255,28 @@ def run_perfect_zone_subgraph(llm, state: WorkflowState) -> Dict[str, Any]:
         "has_unexplained_frames": False,
         "explored_round_count": 0,
         "stop_exploration_early": False,
+        "current_log_dir": subgraph_dir,
     }
     out = graph.invoke(input_state)
+    
+    new_trajectories = out.get("new_trajectories", [])
+    if subgraph_dir and new_trajectories:
+        from explore_by_code.traj_visualization_utils import save_trajectory_visualization
+        from runtime_utils import trajectory_to_saved_payload
+        import os
+        
+        traj_dir = os.path.join(subgraph_dir, "traj")
+        os.makedirs(traj_dir, exist_ok=True)
+        
+        for idx, traj in enumerate(new_trajectories):
+            payload = trajectory_to_saved_payload(traj)
+            if payload:
+                out_path = Path(traj_dir) / f"trajectory_{idx:03d}.json"
+                save_trajectory_visualization(payload, out_path, run_id=None, log_dir=subgraph_dir)
+
     return {
         "code": code,
-        "new_trajectories": out.get("new_trajectories", []),
+        "new_trajectories": new_trajectories,
         "all_trajectories": out.get("all_trajectories", all_trajectories),
         "correct_trajectories": state.get("correct_trajectories", []),
         "has_unexplained_frames": bool(out.get("has_unexplained_frames", False)),

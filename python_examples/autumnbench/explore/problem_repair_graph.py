@@ -9,7 +9,6 @@ import logging
 import sys
 import uuid
 import os
-import json
 from pathlib import Path
 from typing import Any, Dict, List, TypedDict
 
@@ -31,6 +30,8 @@ from shared_runtime import (
     sync_trajectories_to_workspace
 )
 from targeted_collection_graph import call_targeted_collection_graph_from_docker_runtime
+
+from log_manager import create_subgraph_dir, create_node_dir, get_next_sequence_dir, NodeLoggingCallbackHandler
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,8 @@ class ProblemRepairState(TypedDict):
     # Runtime routing keys.
     repair_runtime_key: str
     targeted_runtime_key: str
+
+    current_log_dir: str # Logging directory passed down the graph
 
 
 _REFINE_SYSTEM_PROMPT = """\
@@ -243,6 +246,8 @@ def create_problem_repair_graph(llm):
         return dict((state.get("config") or {}).get(section, {}))
 
     def prepare_repair_runtime_node(state: ProblemRepairState) -> Dict[str, Any]:
+        node_dir = create_node_dir(state.get("current_log_dir", ""), "prepare_repair_runtime")
+        
         global_cfg = _cfg(state, "global_config")
         env_name = str(global_cfg.get("env_name", ""))
         
@@ -258,6 +263,7 @@ def create_problem_repair_graph(llm):
             code_path="candidate_model.py",
             env_name=env_name,
             runtime_key=state.get("repair_runtime_key", ""),
+            log_dir=node_dir,
         )
         
         from shared_runtime import extract_errors_by_traj_path
@@ -296,6 +302,9 @@ def create_problem_repair_graph(llm):
         return {}
 
     def check_need_more_trajectories_node(state: ProblemRepairState) -> Dict[str, Any]:
+        node_dir = create_node_dir(state.get("current_log_dir", ""), "check_need_more_trajectories")
+        handler = NodeLoggingCallbackHandler(node_dir)
+        
         if not state.get("code", "").strip():
             return {"need_more_targeted_trajectories": False}
             
@@ -306,6 +315,7 @@ def create_problem_repair_graph(llm):
             timeout_seconds=30,
             env_name=env_name,
             runtime_key=state.get("repair_runtime_key", ""),
+            log_dir=node_dir,
         )
         
         pool_size = len(_problem_trajectories(state.get("target_problem", {})))
@@ -338,7 +348,7 @@ def create_problem_repair_graph(llm):
         final_messages: List[Any] = []
         for event in agent.stream(
             {"messages": [{"role": "user", "content": user_prompt}]},
-            config={"recursion_limit": 5000},
+            config={"recursion_limit": 5000, "callbacks": [handler]},
             stream_mode="values",
         ):
             if isinstance(event, dict) and "messages" in event:
@@ -370,6 +380,8 @@ def create_problem_repair_graph(llm):
         return "run_shell_refine"
 
     def collect_targeted_node(state: ProblemRepairState) -> Dict[str, Any]:
+        node_dir = create_node_dir(state.get("current_log_dir", ""), "collect_targeted")
+        
         global_cfg = _cfg(state, "global_config")
         budget_cfg = _cfg(state, "budget")
         problem_repair_cfg = _cfg(state, "problem_repair")
@@ -389,6 +401,7 @@ def create_problem_repair_graph(llm):
             targeted_runtime_key=f"targeted-{uuid.uuid4().hex}",
             cleanup_targeted_runtime=True,
             reason="workflow_collect_targeted",
+            current_log_dir=node_dir,
         )
         refreshed_target = collect_out.get("target_problem")
         if not isinstance(refreshed_target, dict):
@@ -399,6 +412,9 @@ def create_problem_repair_graph(llm):
         }
 
     def run_react_refine_node(state: ProblemRepairState) -> Dict[str, Any]:
+        node_dir = create_node_dir(state.get("current_log_dir", ""), "run_react_refine")
+        handler = NodeLoggingCallbackHandler(node_dir)
+        
         global_cfg = _cfg(state, "global_config")
         budget_cfg = _cfg(state, "budget")
         problem_repair_cfg = _cfg(state, "problem_repair")
@@ -419,6 +435,7 @@ def create_problem_repair_graph(llm):
             int(problem_repair_cfg.get("shell_command_timeout_seconds", 30) or 30),
         )
         def _collect_targeted_trajectories(reason: str = "") -> str:
+            targeted_dir = get_next_sequence_dir(node_dir, "targeted_collection")
             collect_out = call_targeted_collection_graph_from_docker_runtime(
                 llm,
                 env_name=env_name,
@@ -436,6 +453,7 @@ def create_problem_repair_graph(llm):
                 targeted_runtime_key=f"targeted-{uuid.uuid4().hex}",
                 cleanup_targeted_runtime=True,
                 reason=reason,
+                current_log_dir=targeted_dir,
             )
             synced_files = collect_out.get("runtime_synced_traj_files", [])
             msg = (
@@ -452,6 +470,7 @@ def create_problem_repair_graph(llm):
             timeout_seconds=shell_command_timeout_seconds,
             env_name=env_name,
             runtime_key=state.get("repair_runtime_key", ""),
+            log_dir=node_dir,
         )
         tools = list(tools)
         
@@ -505,7 +524,7 @@ def create_problem_repair_graph(llm):
         final_messages: List[Any] = []
         for event in agent.stream(
             {"messages": [{"role": "user", "content": prompt}]},
-            config={"recursion_limit": 5000},
+            config={"recursion_limit": 5000, "callbacks": [handler]},
             stream_mode="values",
         ):
             if isinstance(event, dict) and "messages" in event:
@@ -541,12 +560,18 @@ def create_problem_repair_graph(llm):
         new_samples = [{"trajectory": t, "error": {}} for t in runtime_trajectories]
         final_target = append_problem_samples(target_problem, new_samples)
 
+        if latest_code:
+            final_code_path = Path(node_dir) / "final_code.py"
+            final_code_path.write_text(latest_code, encoding="utf-8")
+
         return {
             "target_problem": final_target,
             "session_code_candidate": latest_code,
         }
 
     def evaluate_and_update_problem_status_node(state: ProblemRepairState) -> Dict[str, Any]:
+        node_dir = create_node_dir(state.get("current_log_dir", ""), "evaluate_and_update_problem_status")
+        
         target_trajs = [
             row
             for row in _problem_trajectories(state.get("target_problem", {}))
@@ -635,6 +660,9 @@ def create_problem_repair_graph(llm):
 
 
 def run_problem_repair_subgraph(llm, state: WorkflowState) -> Dict[str, Any]:
+    parent_log_dir = state.get("current_log_dir", "")
+    subgraph_dir = create_subgraph_dir(parent_log_dir, "problem_repair") if parent_log_dir else ""
+    
     config = dict(state.get("config") or {})
     global_cfg = dict(config.get("global_config", {}))
     code = state.get("code", "")
@@ -673,6 +701,7 @@ def run_problem_repair_subgraph(llm, state: WorkflowState) -> Dict[str, Any]:
                 ),
                 "repair_runtime_key": repair_runtime_key,
                 "targeted_runtime_key": "",
+                "current_log_dir": subgraph_dir,
             }
         )
     finally:

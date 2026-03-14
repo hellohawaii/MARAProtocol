@@ -124,6 +124,7 @@ def build_initial_state(
         "repair_runtime_key": None,
         "session_code_candidate": None,
         "experiment_run_dir": dirs["experiment_run_dir"],
+        "current_log_dir": dirs["experiment_run_dir"],
         "current_loop_dir": "",
         "explore_log_dir": "",
         "refine_log_dir": "",

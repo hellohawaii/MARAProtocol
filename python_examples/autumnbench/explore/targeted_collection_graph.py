@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
+from pathlib import Path
 
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
@@ -28,6 +29,8 @@ from runtime_utils import (
     write_trajectories_to_runtime as write_trajectories_to_runtime_util,
 )
 from shell_collect_runtime import run_collect_agent, TARGETED_COLLECT_SYSTEM_PROMPT
+
+from log_manager import create_subgraph_dir, create_node_dir, NodeLoggingCallbackHandler
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +55,8 @@ class TargetedCollectionState(TypedDict):
 
     # Runtime routing keys and info.
     targeted_runtime_key: Optional[str]
+
+    current_log_dir: str # Logging directory passed down the graph
 
 
 
@@ -95,6 +100,9 @@ def create_targeted_collection_graph(llm):
     #     return {"current_hypothesis": hypothesis, "collect_hint": action_hint}
 
     def collect_trajectory_node(state: TargetedCollectionState) -> Dict[str, Any]:
+        node_dir = create_node_dir(state.get("current_log_dir", ""), "collect_trajectory")
+        handler = NodeLoggingCallbackHandler(node_dir)
+        
         global_cfg = _cfg(state, "global_config")
         budget_cfg = _cfg(state, "budget")
         targeted_cfg = _cfg(state, "targeted_collection")
@@ -128,6 +136,8 @@ def create_targeted_collection_graph(llm):
             runtime_key=state.get("targeted_runtime_key"),
             cleanup_runtime=bool(targeted_cfg.get("cleanup_targeted_runtime", False)),
             system_prompt=TARGETED_COLLECT_SYSTEM_PROMPT,
+            log_dir=node_dir,
+            callbacks=[handler],
         )
         
         trajectories = list(collect_out.get("trajectories", []))
@@ -143,6 +153,8 @@ def create_targeted_collection_graph(llm):
         }
 
     def evaluate_and_update_problem_node(state: TargetedCollectionState) -> Dict[str, Any]:
+        node_dir = create_node_dir(state.get("current_log_dir", ""), "evaluate_and_update_problem")
+        
         target_problem = dict(state.get("target_problem", {}))
         new_trajectories = list(state.get("targeted_new_trajectories", []))
         
@@ -186,6 +198,9 @@ def create_targeted_collection_graph(llm):
 
 
 def run_targeted_collection_subgraph(llm, state: WorkflowState) -> Dict[str, Any]:
+    parent_log_dir = state.get("current_log_dir", "")
+    subgraph_dir = create_subgraph_dir(parent_log_dir, "targeted_collection") if parent_log_dir else ""
+    
     target_problem = dict(state.get("target_problem") or {})
     target_problem["problem_samples"] = list(target_problem.get("problem_samples", []))
     
@@ -198,17 +213,33 @@ def run_targeted_collection_subgraph(llm, state: WorkflowState) -> Dict[str, Any
         "current_hypothesis": "",
         "targeted_new_trajectories": [],
         "targeted_runtime_key": state.get("targeted_runtime_key"),
+        "current_log_dir": subgraph_dir,
     }
     
     workflow = create_targeted_collection_graph(llm)
     out_state = workflow.invoke(initial_state)
+    
+    targeted_new_trajectories = out_state.get("targeted_new_trajectories", [])
+    if subgraph_dir and targeted_new_trajectories:
+        from explore_by_code.traj_visualization_utils import save_trajectory_visualization
+        from runtime_utils import trajectory_to_saved_payload
+        import os
+        
+        traj_dir = os.path.join(subgraph_dir, "traj")
+        os.makedirs(traj_dir, exist_ok=True)
+        
+        for idx, traj in enumerate(targeted_new_trajectories):
+            payload = trajectory_to_saved_payload(traj)
+            if payload:
+                out_path = Path(traj_dir) / f"trajectory_{idx:03d}.json"
+                save_trajectory_visualization(payload, out_path, run_id=None, log_dir=subgraph_dir)
     
     updated_target = out_state.get("target_problem", target_problem)
     return {
         "target_problem": updated_target,
         "problems": [updated_target] if updated_target else [],
         "targeted_runtime_key": out_state.get("targeted_runtime_key"),
-        "targeted_new_trajectories": out_state.get("targeted_new_trajectories", []),
+        "targeted_new_trajectories": targeted_new_trajectories,
         "collect_hint": out_state.get("collect_hint", ""),
     }
 
@@ -228,6 +259,7 @@ def call_targeted_collection_graph_from_docker_runtime(
     targeted_runtime_key: Optional[str] = None,
     cleanup_targeted_runtime: bool = True,
     reason: str = "",
+    current_log_dir: str = "",
 ) -> Dict[str, Any]:
     target_problem = dict(base_target_problem or {})
     target_problem["problem_samples"] = list(target_problem.get("problem_samples", []))
@@ -253,6 +285,7 @@ def call_targeted_collection_graph_from_docker_runtime(
         "target_problem": target_problem,
         "collect_hint": collect_hint or "",
         "targeted_runtime_key": targeted_runtime_key,
+        "current_log_dir": current_log_dir,
     }
     
     out = run_targeted_collection_subgraph(llm, state)

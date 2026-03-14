@@ -376,8 +376,36 @@ def execute_run_command(
 	env_api_base_url: str = "http://host.docker.internal:8000",
 	env_name: Optional[str] = None,
 	runtime_key: Optional[str] = None,
+	log_dir: Optional[str] = None,
 ) -> str:
 	ensure_workspace_dirs()
+	
+	actual_log_dir = log_dir
+	if log_dir:
+		log_path = Path(log_dir)
+		if log_path.exists() and log_path.name.endswith("_run_react_refine"):
+			max_idx = -1
+			latest_dir = None
+			for item in log_path.iterdir():
+				if not item.is_dir():
+					continue
+				prefix, sep, _rest = item.name.partition("_")
+				if not sep:
+					continue
+				try:
+					num = int(prefix)
+					if num > max_idx:
+						max_idx = num
+						latest_dir = item
+				except ValueError:
+					continue
+			if latest_dir and latest_dir.name.endswith("_code"):
+				actual_log_dir = str(latest_dir)
+			else:
+				seq = max_idx + 1 if max_idx >= 0 else 1
+				new_dir = log_path / f"{seq:03d}_code"
+				new_dir.mkdir(parents=True, exist_ok=True)
+				actual_log_dir = str(new_dir)
 	ts_start = time.time()
 	ts_start_iso = datetime.fromtimestamp(ts_start).isoformat()
 	try:
@@ -408,7 +436,10 @@ def execute_run_command(
 			"stderr": result.get("stderr", ""),
 		}
 		try:
-			append_jsonl(run_logs_dir(runtime.run_id) / "commands.jsonl", record)
+			if actual_log_dir:
+				append_jsonl(Path(actual_log_dir) / "shell" / "commands.jsonl", record)
+			else:
+				append_jsonl(run_logs_dir(runtime.run_id) / "commands.jsonl", record)
 		except Exception as exc:
 			logging_errors.append(f"failed to append commands.jsonl: {exc}")
 
@@ -420,6 +451,7 @@ def execute_run_command(
 				workspace_dir=runtime.active_workspace_dir,
 				ts_start_iso=ts_start_iso,
 				ts_end_iso=ts_end_iso,
+				log_dir=actual_log_dir,
 			)
 		except Exception as exc:
 			logging_errors.append(f"failed to persist check artifacts: {exc}")
@@ -511,6 +543,7 @@ def get_langchain_tools(
 	env_api_base_url: str = "http://host.docker.internal:8000",
 	env_name: Optional[str] = None,
 	runtime_key: Optional[str] = None,
+	log_dir: Optional[str] = None,
 ):
 	try:
 		from langchain_core.tools import StructuredTool
@@ -529,6 +562,7 @@ def get_langchain_tools(
 			env_api_base_url=env_api_base_url,
 			env_name=env_name,
 			runtime_key=runtime_key,
+			log_dir=log_dir,
 		)
 
 	run_command_tool = StructuredTool.from_function(
