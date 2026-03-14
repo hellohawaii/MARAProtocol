@@ -257,14 +257,15 @@ def create_problem_repair_graph(llm):
         )
         repair_workspace_dir = repair_info.get("workspace_dir")
         
-        code_sync_out = write_code_to_runtime(
-            execute_run_command,
-            code_text=state.get("code") or "",
-            code_path="candidate_model.py",
-            env_name=env_name,
-            runtime_key=state.get("repair_runtime_key", ""),
-            log_dir=node_dir,
-        )
+        if state.get("code", "").strip():
+            write_code_to_runtime(
+                execute_run_command,
+                code_text=state.get("code") or "",
+                code_path="candidate_model.py",
+                env_name=env_name,
+                runtime_key=state.get("repair_runtime_key", ""),
+                log_dir=node_dir,
+            )
         
         from shared_runtime import extract_errors_by_traj_path
         
@@ -282,9 +283,9 @@ def create_problem_repair_graph(llm):
         trajectory_index = []
         if repair_workspace_dir:
             if not state.get("code", "").strip():
-                # If code is empty, we sync all trajectories as correct_pool so the agent can learn from them
+                # If code is empty, we sync all trajectories as seed_pool because the current code cannot predict them
                 trajectory_index.extend(sync_trajectories_to_workspace(
-                    all_trajectories, "correct_pool", repair_workspace_dir
+                    all_trajectories, "seed_pool", repair_workspace_dir
                 ))
             else:
                 trajectory_index.extend(sync_trajectories_to_workspace(
@@ -394,7 +395,7 @@ def create_problem_repair_graph(llm):
             code_path="candidate_model.py",
             fallback_code=state.get("code") or "",
             max_explore_steps=int(budget_cfg.get("max_explore_steps", 120)),
-            collect_agent_max_turns=int(problem_repair_cfg.get("collect_agent_max_turns", 16)),
+            collect_agent_max_turns=int(problem_repair_cfg.get("collect_agent_max_turns", 100)),
             shell_command_timeout_seconds=int(
                 problem_repair_cfg.get("shell_command_timeout_seconds", 30)
             ),
@@ -428,7 +429,7 @@ def create_problem_repair_graph(llm):
         
         max_turns = max(
             4,
-            int(problem_repair_cfg.get("shell_refine_max_turns", 20) or 20),
+            int(problem_repair_cfg.get("shell_refine_max_turns", 100) or 100),
         )
         shell_command_timeout_seconds = max(
             10,
@@ -445,7 +446,7 @@ def create_problem_repair_graph(llm):
                 fallback_code=code,
                 max_explore_steps=int(budget_cfg.get("max_explore_steps", 120)),
                 collect_agent_max_turns=int(
-                    problem_repair_cfg.get("collect_agent_max_turns", 16)
+                    problem_repair_cfg.get("collect_agent_max_turns", 100)
                 ),
                 shell_command_timeout_seconds=int(
                     problem_repair_cfg.get("shell_command_timeout_seconds", 30)
@@ -504,9 +505,9 @@ def create_problem_repair_graph(llm):
                 "Write the initial dynamics code with a ReAct workflow.\n"
                 f"code_path: {code_path}\n"
                 "target_trajectory_dir: traj (Read trajectory_index.jsonl to find trajectories that should be predicted correctly)\n\n"
-                "Please explore the workspace, read the correct trajectories, and write the initial `candidate_model.py`.\n"
+                "Please explore the workspace, read the seed trajectories, and write the initial `candidate_model.py`.\n"
                 "Use run_command_in_docker to experiment and edit code. "
-                "Focus on writing a model that can correctly predict the trajectories in the correct_pool."
+                "Focus on writing a model that can correctly predict the trajectories in the seed_pool."
             )
         else:
             filtered_errors_json = json.dumps(filtered_errors[:3], ensure_ascii=True, indent=2)

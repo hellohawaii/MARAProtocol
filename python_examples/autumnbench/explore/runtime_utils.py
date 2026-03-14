@@ -172,6 +172,7 @@ def write_code_to_runtime(
     env_name: str,
     runtime_key: str,
     timeout_seconds: int = 30,
+    log_dir: Optional[str] = None,
 ) -> str:
     json_blob = json.dumps(code_text or "", ensure_ascii=True)
     cmd = (
@@ -192,6 +193,7 @@ def write_code_to_runtime(
         env_name=env_name,
         timeout_seconds=timeout_seconds,
         runtime_key=runtime_key,
+        log_dir=log_dir,
     )
 
 

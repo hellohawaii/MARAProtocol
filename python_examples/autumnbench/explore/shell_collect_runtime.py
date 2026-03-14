@@ -63,7 +63,6 @@ env = RemoteEnvWrapper()
 r = env.reset()
 s = env.step('click 3 4')
 t = env.save_trajectory('traj_name') # Saves to /workspace/traj
-t2 = env.save_trajectory('tmp_traj_name', dir='tmp_traj') # Saves to /workspace/tmp_traj
 ```
 
 RemoteEnvWrapper method semantics:
@@ -72,36 +71,28 @@ RemoteEnvWrapper method semantics:
 - step(action: str) -> dict
   Executes one valid action and returns the next visible state dict.
   For click actions use the exact format: "click x y" (for example: "click 3 4").
-- save_trajectory(filename: Optional[str] = None, dir: Optional[str] = None) -> dict
-  Persists the currently collected trajectory. By default, saves to /workspace/traj/...
-  Use dir="tmp_traj" to save temporary experimental trajectories.
+- save_trajectory(filename: Optional[str] = None) -> dict
+  Persists the currently collected trajectory. Automatically saves to /workspace/traj/.
   Returns a success indicator object (for example: {"success": true}).
 
 Workspace Structure & Background:
 You are operating in /workspace. You can use shell commands to view the contents of the directory as needed.
 Important directories and files:
-- /workspace/explore_code/: Directory for your formal exploration Python scripts.
-- /workspace/traj/: Directory where env.save_trajectory() automatically saves formal trajectories.
-- /workspace/tmp_explore_code/: Directory for temporary experimental scripts.
-- /workspace/tmp_traj/: Directory for temporary experimental trajectories.
-- /workspace/exploration_log.jsonl: A JSONL (JSON Lines) file you MUST maintain to log your formal explorations. Each line is a JSON object with: "code_path", "trajectory_path", "code_description", and "trajectory_description". If the file does not exist or is empty, it means no previous exploration has been done. You can safely append to it (e.g., using `echo '{"code_path": ...}' >> /workspace/exploration_log.jsonl`).
+- /workspace/explore_code/: Directory for your exploration Python scripts.
+- /workspace/traj/: Directory where env.save_trajectory() automatically saves trajectories.
+- /workspace/exploration_log.jsonl: A JSONL (JSON Lines) file you MUST maintain to log your explorations. Each line is a JSON object with: "code_path", "trajectory_path", "code_description", and "trajectory_description". If the file does not exist or is empty, it means no previous exploration has been done.
 
-Temporary Experiments:
-Before formally generating trajectories, you can conduct temporary experiments to ensure your code produces valuable trajectories.
-- Write temporary scripts in /workspace/tmp_explore_code/tmp_trial.py.
-- Save temporary trajectories using env.save_trajectory(filename, dir="tmp_traj").
-- The tmp_explore_code and tmp_traj directories will be automatically deleted in subsequent processes, so you can freely add or overwrite files here.
-
-Formal Exploration Constraints:
+Exploration Constraints:
 Your main goal is to collect valuable trajectories and save them to the traj folder.
-1) Formal exploration must be done via Python scripts placed in /workspace/explore_code/ with unique names (e.g., explore_1.py).
+1) Exploration must be done via Python scripts placed in /workspace/explore_code/ with unique names (e.g., explore_1.py).
 2) The script MUST import RemoteEnvWrapper from env_api_client and call env.reset(), env.step(action), and env.save_trajectory(filename).
-3) Calling env.save_trajectory(filename) without the dir argument automatically saves the trajectory to /workspace/traj.
-4) You MUST manage the exploration log file (/workspace/exploration_log.jsonl). It is in JSONL format. For each formal exploration, you must append a single JSON object line to this file containing:
-   - "code_path": Python code path
-   - "trajectory_path": Saved trajectory path
-   - "code_description": Brief description of the code
-   - "trajectory_description": Brief description of observations from the trajectory
+3) Calling env.save_trajectory(filename) automatically saves the trajectory to /workspace/traj.
+4) You MUST manage the exploration log file (/workspace/exploration_log.jsonl). It is in JSONL format. IMMEDIATELY after EVERY TIME you successfully execute a code file and save a trajectory, you must append a single JSON object line to this file.
+   CRITICAL: The "code_description" and "trajectory_description" fields MUST be extremely detailed.
+   - "code_description": Detail the exact sequence of actions taken, including specific coordinates or logic used.
+   - "trajectory_description": Detail the exact state changes observed in the environment (e.g., what objects appeared, disappeared, moved, or changed state as a result of the actions).
+   Example shell command to append to the log:
+   echo '{"code_path": "explore_code/explore_1.py", "trajectory_path": "traj/explore_1.json", "code_description": "First clicked on (3, 4) to select the red block, then pressed right arrow twice to move it.", "trajectory_description": "The red block at (3, 4) became highlighted after the click, and then moved to (5, 4) after the right arrow actions. No other objects were affected."}' >> /workspace/exploration_log.jsonl
 5) Do not output markdown commands; run actual shell commands through the tool.
 """
 
@@ -137,7 +128,6 @@ env = RemoteEnvWrapper()
 r = env.reset()
 s = env.step('click 3 4')
 t = env.save_trajectory('traj_name') # Saves to /workspace/traj
-t2 = env.save_trajectory('tmp_traj_name', dir='tmp_traj') # Saves to /workspace/tmp_traj
 ```
 
 RemoteEnvWrapper method semantics:
@@ -146,40 +136,32 @@ RemoteEnvWrapper method semantics:
 - step(action: str) -> dict
   Executes one valid action and returns the next visible state dict.
   For click actions use the exact format: "click x y" (for example: "click 3 4").
-- save_trajectory(filename: Optional[str] = None, dir: Optional[str] = None) -> dict
-  Persists the currently collected trajectory. By default, saves to /workspace/traj/...
-  Use dir="tmp_traj" to save temporary experimental trajectories.
+- save_trajectory(filename: Optional[str] = None) -> dict
+  Persists the currently collected trajectory. Automatically saves to /workspace/traj/.
   Returns a success indicator object (for example: {"success": true}).
 
 Workspace Structure & Background:
 You are operating in /workspace. You can use shell commands to view the contents of the directory as needed.
 Important directories and files:
-- /workspace/explore_code/: Directory for your formal exploration Python scripts.
-- /workspace/traj/: Directory containing the formal trajectories. Files prefixed with `seed_pool_` are target problem trajectories to fix, while `correct_pool_` indicates trajectories that the current `candidate_model` can correctly predict, which you should try your best not to break.
+- /workspace/explore_code/: Directory for your exploration Python scripts.
+- /workspace/traj/: Directory containing the trajectories. Files prefixed with `seed_pool_` are target problem trajectories to fix, while `correct_pool_` indicates trajectories that the current `candidate_model` can correctly predict, which you should try your best not to break.
 - /workspace/trajectory_index.jsonl: A JSONL (JSON Lines) file containing objects describing available trajectories. Each line has the following format:
   {"trajectory_path": "traj/seed_pool_000.json", "code_path": "explore_code/seed_pool_000.py", "trajectory_description": "...", "code_description": "...", "type": "seed_pool", "error": {...}}
   The "type" field indicates the trajectory's purpose: "seed_pool" indicates target problem trajectories to fix, "correct_pool" indicates correct trajectories that should not be broken.
   If code is provided, the "error" field contains the specific prediction errors made by the INITIAL version of the code on this trajectory. Note that if the code is updated later, the actual errors might be different, but this field serves as a reference for the original problem.
-- /workspace/tmp_explore_code/: Directory for temporary experimental scripts.
-- /workspace/tmp_traj/: Directory for temporary experimental trajectories.
-- /workspace/exploration_log.jsonl: A JSONL (JSON Lines) file you MUST maintain to log your formal explorations. Each line is a JSON object with: "code_path", "trajectory_path", "code_description", and "trajectory_description". If the file does not exist or is empty, it means no previous exploration has been done. You can safely append to it (e.g., using `echo '{"code_path": ...}' >> /workspace/exploration_log.jsonl`).
+- /workspace/exploration_log.jsonl: A JSONL (JSON Lines) file you MUST maintain to log your explorations. Each line is a JSON object with: "code_path", "trajectory_path", "code_description", and "trajectory_description". If the file does not exist or is empty, it means no previous exploration has been done.
 
-Temporary Experiments:
-Before formally generating trajectories, you can conduct temporary experiments to ensure your code produces valuable trajectories.
-- Write temporary scripts in /workspace/tmp_explore_code/tmp_trial.py.
-- Save temporary trajectories using env.save_trajectory(filename, dir="tmp_traj").
-- The tmp_explore_code and tmp_traj directories will be automatically deleted in subsequent processes, so you can freely add or overwrite files here.
-
-Formal Exploration Constraints:
+Exploration Constraints:
 Your main goal is to collect valuable trajectories and save them to the traj folder.
-1) Formal exploration must be done via Python scripts placed in /workspace/explore_code/ with unique names (e.g., explore_1.py).
+1) Exploration must be done via Python scripts placed in /workspace/explore_code/ with unique names (e.g., explore_1.py).
 2) The script MUST import RemoteEnvWrapper from env_api_client and call env.reset(), env.step(action), and env.save_trajectory(filename).
-3) Calling env.save_trajectory(filename) without the dir argument automatically saves the trajectory to /workspace/traj.
-4) You MUST manage the exploration log file (/workspace/exploration_log.jsonl). It is in JSONL format. For each formal exploration, you must append a single JSON object line to this file containing:
-   - "code_path": Python code path
-   - "trajectory_path": Saved trajectory path
-   - "code_description": Brief description of the code
-   - "trajectory_description": Brief description of observations from the trajectory
+3) Calling env.save_trajectory(filename) automatically saves the trajectory to /workspace/traj.
+4) You MUST manage the exploration log file (/workspace/exploration_log.jsonl). It is in JSONL format. IMMEDIATELY after EVERY TIME you successfully execute a code file and save a trajectory, you must append a single JSON object line to this file.
+   CRITICAL: The "code_description" and "trajectory_description" fields MUST be extremely detailed.
+   - "code_description": Detail the exact sequence of actions taken, including specific coordinates or logic used.
+   - "trajectory_description": Detail the exact state changes observed in the environment (e.g., what objects appeared, disappeared, moved, or changed state as a result of the actions).
+   Example shell command to append to the log:
+   echo '{"code_path": "explore_code/explore_1.py", "trajectory_path": "traj/explore_1.json", "code_description": "First clicked on (3, 4) to select the red block, then pressed right arrow twice to move it.", "trajectory_description": "The red block at (3, 4) became highlighted after the click, and then moved to (5, 4) after the right arrow actions. No other objects were affected."}' >> /workspace/exploration_log.jsonl
 5) Do not output markdown commands; run actual shell commands through the tool.
 """
 
@@ -191,7 +173,7 @@ def run_collect_agent(
     max_explore_steps: int,
     objective: Optional[str] = None,
     code: Optional[str] = None,
-    max_turns: int = 16,
+    max_turns: int = 100,
     timeout_seconds: int = 30,
     dockerfile_path: Optional[str] = DEFAULT_DOCKERFILE_PATH,
     docker_image: Optional[str] = None,
@@ -247,7 +229,8 @@ def run_collect_agent(
         user_prompt = (
             "Please start the exploration and collect at least 1 new trajectory.\n"
             f"Constraint: Max steps per trajectory in your script must be <= {int(max_explore_steps)}.\n"
-            "Remember to follow the formal exploration constraints from the system prompt.\n"
+            "Remember to follow the exploration constraints from the system prompt.\n"
+            "CRITICAL: IMMEDIATELY after generating each trajectory, you MUST append its details to exploration_log.jsonl before doing anything else or exiting.\n"
             + code_context
             + prompt_objective
         )

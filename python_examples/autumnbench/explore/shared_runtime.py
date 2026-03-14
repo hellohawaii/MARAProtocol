@@ -362,5 +362,21 @@ def attach_metadata_to_trajectories(
             traj["code_description"] = entry.get("code_description", "")
             traj["trajectory_description"] = entry.get("trajectory_description", "")
             traj["code_content"] = code_contents.get(traj["code_path"], "")
+        else:
+            pass
+            # Fallback for trajectories that the agent forgot to log
+            # if t_path.startswith("traj/") and t_path.endswith(".json"):
+            #     base_name = t_path[len("traj/"):-len(".json")]
+            #     guessed_code_path = f"explore_code/{base_name}.py"
+            #     traj["code_path"] = guessed_code_path
+            #     traj["code_description"] = ""
+            #     traj["trajectory_description"] = ""
+            #     traj["code_content"] = read_code_from_runtime(
+            #         execute_run_command_fn=execute_run_command_fn,
+            #         env_name=env_name,
+            #         runtime_key=runtime_key,
+            #         code_path=guessed_code_path,
+            #         timeout_seconds=10,
+            #     )
         traj["source_workspace_dir"] = workspace_dir
 

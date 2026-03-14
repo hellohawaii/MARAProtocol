@@ -16,6 +16,7 @@ from shell_collect_runtime import run_collect_agent, DEFAULT_DOCKERFILE_PATH
 from explore_by_code.env_wrapper import get_langchain_tools, get_or_create_runtime_info
 from runtime_utils import message_content_to_text
 from langchain.agents import create_agent
+from pathlib import Path
 
 from log_manager import create_subgraph_dir, create_node_dir, NodeLoggingCallbackHandler
 
@@ -172,10 +173,10 @@ If the exploration is sufficient and covers enough edge cases, you MUST output e
             objective=objective,
             code=state.get("code"),
             max_explore_steps=int(budget_cfg.get("max_explore_steps", 120)),
-            max_turns=int(perfect_cfg.get("collect_agent_max_turns", 16)),
+            max_turns=int(perfect_cfg.get("collect_agent_max_turns", 100)),
             timeout_seconds=int(perfect_cfg.get("shell_command_timeout_seconds", 30)),
             runtime_key="perfect-zone",
-            log_file_path="/workspace/exploration_log.json",
+            log_file_path="/workspace/exploration_log.jsonl",
             log_dir=node_dir,
             callbacks=[handler],
         )

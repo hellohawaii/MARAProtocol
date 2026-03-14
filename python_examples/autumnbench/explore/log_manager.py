@@ -148,12 +148,31 @@ class NodeLoggingCallbackHandler(BaseCallbackHandler):
         }
         filepath.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def on_tool_end(self, output: str, **kwargs: Any) -> Any:
+    def on_tool_end(self, output: Any, **kwargs: Any) -> Any:
         """Run when tool ends running."""
         filepath = self._get_next_file_path("tool_end")
+        
+        serializable_output = output
+        if isinstance(output, BaseMessage):
+            serializable_output = self._message_to_dict(output)
+            if hasattr(output, "tool_call_id"):
+                serializable_output["tool_call_id"] = output.tool_call_id
+            if hasattr(output, "artifact"):
+                try:
+                    json.dumps(output.artifact)
+                    serializable_output["artifact"] = output.artifact
+                except (TypeError, ValueError):
+                    serializable_output["artifact"] = str(output.artifact)
+        else:
+            # Ensure output is JSON serializable
+            try:
+                json.dumps(output)
+            except (TypeError, ValueError):
+                serializable_output = str(output)
+            
         data = {
             "event": "on_tool_end",
-            "output": output,
+            "output": serializable_output,
             "kwargs": {k: str(v) for k, v in kwargs.items() if k != "parent_run_id"}
         }
         filepath.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

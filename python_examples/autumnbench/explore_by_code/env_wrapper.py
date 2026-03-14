@@ -39,7 +39,7 @@ TRAJ_DIR = TEMPLATE_WORKSPACE_DIR / "traj"
 DEFAULT_DOCKER_IMAGE = "python:3.11-slim"
 _RUNTIME_LOCK = threading.Lock()
 _RUNTIME_SESSIONS: Dict[
-	Tuple[Optional[str], Optional[str], Optional[str], str, Optional[str], Optional[str]],
+	Tuple[Optional[str], Optional[str]],
 	"_DockerRuntime",
 ] = {}
 
@@ -303,12 +303,8 @@ def _make_runtime_request_key(
 	env_api_base_url: str,
 	env_name: Optional[str],
 	runtime_key: Optional[str],
-) -> Tuple[Optional[str], Optional[str], Optional[str], str, Optional[str], Optional[str]]:
+) -> Tuple[Optional[str], Optional[str]]:
 	return (
-		docker_image,
-		str(Path(dockerfile_path).resolve()) if dockerfile_path else None,
-		str(Path(docker_build_context).resolve()) if docker_build_context else None,
-		env_api_base_url,
 		env_name,
 		runtime_key,
 	)
