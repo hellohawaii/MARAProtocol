@@ -103,7 +103,9 @@ Work style:
 - Prefer short command batches and inspect outputs frequently.
 - Keep a hypothesis log in your reasoning about object rules and hidden state.
 - Iterate exploration <-> coding as needed.
-- Stop only when you judge your understanding and validation are sufficient.
+- Avoid overfitting to a single trajectory. If you encounter a trajectory that your code cannot explain, a suitable strategy is to try to find or generate similar scenarios to understand the underlying rule, rather than hardcoding for that specific case.
+- DO NOT stop prematurely just because your current model perfectly explains the currently collected trajectories. You must actively explore the environment to discover new situations and edge cases.
+- Stop only when you are confident that your collected trajectories have fully explored all possible scenarios in the environment and your model can explain all of them.
 """
 
 

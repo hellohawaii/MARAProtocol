@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain_core.callbacks import BaseCallbackHandler
 
 _FILE_DIR = Path(__file__).resolve().parent
@@ -176,7 +177,7 @@ def run_shell_react_agent(
     env_name: str,
     *,
     llm_model: str = "google/gemini-2.5-pro",
-    max_turns: int = 120,
+    max_turns: int = 1000,
     timeout_seconds: int = 30,
     docker_image: Optional[str] = None,
     dockerfile_path: Optional[str] = DEFAULT_DOCKERFILE_PATH,
@@ -203,6 +204,12 @@ def run_shell_react_agent(
         model=llm,
         tools=tools,
         system_prompt=SHELL_REACT_SYSTEM_PROMPT,
+        middleware=[
+            ModelCallLimitMiddleware(
+                run_limit=max_turns,
+                exit_behavior="end",
+            )
+        ],
     )
 
     user_prompt = build_initial_user_prompt(env_name)
@@ -225,7 +232,7 @@ def run_shell_react_agent(
     stream_event_count = 0
     for event in agent.stream(
         {"messages": [{"role": "user", "content": user_prompt}]},
-        config={"recursion_limit": max_turns, "callbacks": [trace_cb]},
+        config={"recursion_limit": 1000, "callbacks": [trace_cb]},
         stream_mode="values",
     ):
         stream_event_count += 1
@@ -286,7 +293,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-turns",
         type=int,
-        default=120,
+        default=1000,
         help="Safety recursion limit for the agent loop.",
     )
     parser.add_argument(
