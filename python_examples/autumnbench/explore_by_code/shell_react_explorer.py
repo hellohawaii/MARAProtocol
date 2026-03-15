@@ -178,6 +178,17 @@ def _messages_to_jsonable(messages: List[Any]) -> List[Dict[str, Any]]:
     return rows
 
 
+def _is_terminal_ai_without_tool_calls(messages: List[Any]) -> bool:
+    if not messages:
+        return False
+    last_msg = messages[-1]
+    msg_type = (getattr(last_msg, "type", "") or last_msg.__class__.__name__).lower()
+    if msg_type not in ("ai", "aimessage"):
+        return False
+    tool_calls = getattr(last_msg, "tool_calls", None) or []
+    return len(tool_calls) == 0
+
+
 def run_shell_react_agent(
     env_name: str,
     *,
@@ -491,6 +502,11 @@ async def arun_shell_react_agent(
         # graph paused or finished
         state = await agent.aget_state(config)
         if not state.next:
+            if wait_for_user_input_callback and _is_terminal_ai_without_tool_calls(final_messages):
+                user_input = await wait_for_user_input_callback()
+                if user_input and user_input.strip():
+                    input_state = {"messages": [HumanMessage(content=user_input)]}
+                    continue
             break # finished
             
         if state_changed and wait_for_user_input_callback:
