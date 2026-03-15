@@ -260,7 +260,9 @@ def run_shell_react_agent(
             if final_messages:
                 last_msg = final_messages[-1]
                 
-                # Capture code file and content
+                # Track which code file is being validated.
+                # NOTE: At tool_call time, the shell command has not executed yet,
+                # so reading file content here can be stale.
                 if getattr(last_msg, "tool_calls", None):
                     for tool_call in last_msg.tool_calls:
                         if tool_call.get("name") == "run_command_in_docker":
@@ -268,10 +270,6 @@ def run_shell_react_agent(
                             match = _CHECK_TRAJ_PATTERN.search(command)
                             if match:
                                 current_code_file = match.group("code").strip("'\"")
-                                if workspace_dir:
-                                    abs_code_path = workspace_dir / current_code_file
-                                    if abs_code_path.is_file():
-                                        current_code_content = abs_code_path.read_text(encoding="utf-8")
                                 print(f"\n[State Update] Validating code file: {current_code_file}")
 
                 # Capture new trajectories and content
@@ -287,6 +285,13 @@ def run_shell_react_agent(
                                 if abs_traj_path.is_file():
                                     current_traj_contents[saved_path] = json.loads(abs_traj_path.read_text(encoding="utf-8"))
                             print(f"\n[State Update] New trajectory saved: {saved_path}")
+
+                    # Refresh code content after the shell tool command has executed.
+                    if workspace_dir and current_code_file:
+                        abs_code_path = workspace_dir / current_code_file
+                        if abs_code_path.is_file():
+                            current_code_content = abs_code_path.read_text(encoding="utf-8")
+                            print(f"\n[State Update] Code content updated: {current_code_content}")
 
             _write_json(
                 detail_log_dir / "stream_events" / f"{stream_event_count:04d}.json",
@@ -426,7 +431,9 @@ async def arun_shell_react_agent(
                 if final_messages:
                     last_msg = final_messages[-1]
                     
-                    # Capture code file and content
+                    # Track which code file is being validated.
+                    # NOTE: At tool_call time, the shell command has not executed yet,
+                    # so reading file content here can be stale.
                     if getattr(last_msg, "tool_calls", None):
                         for tool_call in last_msg.tool_calls:
                             if tool_call.get("name") == "run_command_in_docker":
@@ -434,13 +441,6 @@ async def arun_shell_react_agent(
                                 match = _CHECK_TRAJ_PATTERN.search(command)
                                 if match:
                                     current_code_file = match.group("code").strip("'\"")
-                                    if workspace_dir:
-                                        abs_code_path = workspace_dir / current_code_file
-                                        if abs_code_path.is_file():
-                                            new_content = abs_code_path.read_text(encoding="utf-8")
-                                            if new_content != current_code_content:
-                                                current_code_content = new_content
-                                                state_changed = True
                                     print(f"\n[State Update] Validating code file: {current_code_file}")
 
                     # Capture new trajectories and content
@@ -457,6 +457,15 @@ async def arun_shell_react_agent(
                                         current_traj_contents[saved_path] = json.loads(abs_traj_path.read_text(encoding="utf-8"))
                                         state_changed = True
                                 print(f"\n[State Update] New trajectory saved: {saved_path}")
+
+                        # Refresh code content after the shell tool command has executed.
+                        if workspace_dir and current_code_file:
+                            abs_code_path = workspace_dir / current_code_file
+                            if abs_code_path.is_file():
+                                new_content = abs_code_path.read_text(encoding="utf-8")
+                                if new_content != current_code_content:
+                                    current_code_content = new_content
+                                    state_changed = True
 
                 _write_json(
                     detail_log_dir / "stream_events" / f"{stream_event_count:04d}.json",
