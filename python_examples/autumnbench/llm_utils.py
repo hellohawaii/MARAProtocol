@@ -42,6 +42,11 @@ MODEL_PRICING = {
             {"up_to_tokens": float("inf"), "input": 2.00, "output": 12.00},
         ]
     },
+    "google/gemini-3.1-pro-preview": {
+        "tiers": [
+            {"up_to_tokens": float("inf"), "input": 2.00, "output": 12.00},
+        ]
+    },
     "default": {
         "tiers": [
             {"up_to_tokens": float("inf"), "input": 1.00, "output": 3.00}
