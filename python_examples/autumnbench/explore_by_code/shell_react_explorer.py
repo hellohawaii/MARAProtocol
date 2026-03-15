@@ -29,6 +29,7 @@ from env_wrapper import (  # noqa: E402
     get_langchain_tools,
     get_or_create_runtime_info,
 )
+from log_utils import _CHECK_TRAJ_PATTERN  # noqa: E402
 from shell_react_prompt import (  # noqa: E402
     SHELL_REACT_SYSTEM_PROMPT,
     build_initial_user_prompt,
@@ -228,6 +229,12 @@ def run_shell_react_agent(
     detail_log_dir = transcript_path.with_suffix("") / "details"
     trace_cb = _JsonTraceCallback(detail_log_dir)
 
+    workspace_dir = Path(runtime_info.get("workspace_dir", ""))
+    current_code_file = None
+    current_code_content = None
+    current_traj_files = set()
+    current_traj_contents = {}
+
     final_messages: List[Any] = []
     stream_event_count = 0
     for event in agent.stream(
@@ -238,6 +245,44 @@ def run_shell_react_agent(
         stream_event_count += 1
         if isinstance(event, dict) and "messages" in event:
             final_messages = event.get("messages", []) or final_messages
+            
+            if final_messages:
+                last_msg = final_messages[-1]
+                
+                # Capture code file and content
+                if getattr(last_msg, "tool_calls", None):
+                    for tool_call in last_msg.tool_calls:
+                        if tool_call.get("name") == "run_command_in_docker":
+                            command = tool_call.get("args", {}).get("command", "")
+                            match = _CHECK_TRAJ_PATTERN.search(command)
+                            if match:
+                                current_code_file = match.group("code").strip("'\"")
+                                if workspace_dir:
+                                    abs_code_path = workspace_dir / current_code_file
+                                    if abs_code_path.is_file():
+                                        current_code_content = abs_code_path.read_text(encoding="utf-8")
+                                print(f"\n[State Update] Validating code file: {current_code_file}")
+
+                # Capture new trajectories and content
+                msg_type = getattr(last_msg, "type", "") or last_msg.__class__.__name__
+                if msg_type == "ToolMessage":
+                    content = _message_content_to_text(getattr(last_msg, "content", ""))
+                    for line in content.splitlines():
+                        if '"saved_path"' in line:
+                            try:
+                                parsed = json.loads(line.strip())
+                                if "saved_path" in parsed:
+                                    saved_path = parsed["saved_path"]
+                                    if saved_path not in current_traj_files:
+                                        current_traj_files.add(saved_path)
+                                        if workspace_dir:
+                                            abs_traj_path = workspace_dir / saved_path
+                                            if abs_traj_path.is_file():
+                                                current_traj_contents[saved_path] = json.loads(abs_traj_path.read_text(encoding="utf-8"))
+                                        print(f"\n[State Update] New trajectory saved: {saved_path}")
+                            except json.JSONDecodeError:
+                                pass
+
             _write_json(
                 detail_log_dir / "stream_events" / f"{stream_event_count:04d}.json",
                 {

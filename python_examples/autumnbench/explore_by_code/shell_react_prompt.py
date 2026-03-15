@@ -51,7 +51,7 @@ RemoteEnvWrapper method semantics:
 - save_trajectory(filename: Optional[str] = None) -> dict
   Persists the currently collected trajectory into traj/...
   Use this to store data for later checking and iteration.
-  Returns a success indicator object (for example: {"success": true}).
+  Returns a success indicator object (for example: {"success": true, "saved_path": "traj/..."}).
 
 Trajectory checker:
 - Script: check_traj_example.py

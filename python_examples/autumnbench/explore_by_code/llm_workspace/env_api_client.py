@@ -42,4 +42,6 @@ class RemoteEnvWrapper:
         payload: Dict[str, Any] = {}
         if filename:
             payload["filename"] = filename
-        return self._post("/save_trajectory", payload)
+        result = self._post("/save_trajectory", payload)
+        print(json.dumps(result))
+        return result

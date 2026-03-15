@@ -254,7 +254,7 @@ class EnvSession:
             except Exception:
                 # Fail-open: visualization errors should not affect trajectory saving.
                 pass
-            return {"success": True}
+            return {"success": True, "saved_path": f"traj/{safe_name}"}
 
 
 app = FastAPI(title="AutumnBench Environment API", version="1.0.0")
