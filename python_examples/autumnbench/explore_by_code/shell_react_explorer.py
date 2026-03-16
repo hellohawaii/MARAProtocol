@@ -358,6 +358,18 @@ async def arun_shell_react_agent(
     wait_for_user_input_callback=None,
     collaborative: bool = False,
 ) -> Dict[str, Any]:
+    terminal_waiting_message = "AI thinks exploration is complete. Waiting for input!"
+    default_waiting_message = "Waiting for input!"
+
+    async def _wait_for_user_input(waiting_message: str) -> Any:
+        if not wait_for_user_input_callback:
+            return None
+        try:
+            return await wait_for_user_input_callback(waiting_message)
+        except TypeError:
+            # Backward compatibility for callbacks that take no arguments.
+            return await wait_for_user_input_callback()
+
     llm = get_llm(model=llm_model)
     runtime_info = get_or_create_runtime_info(
         docker_image=docker_image,
@@ -503,14 +515,14 @@ async def arun_shell_react_agent(
         state = await agent.aget_state(config)
         if not state.next:
             if wait_for_user_input_callback and _is_terminal_ai_without_tool_calls(final_messages):
-                user_input = await wait_for_user_input_callback()
+                user_input = await _wait_for_user_input(terminal_waiting_message)
                 if user_input and user_input.strip():
                     input_state = {"messages": [HumanMessage(content=user_input)]}
                     continue
             break # finished
             
         if state_changed and wait_for_user_input_callback:
-            user_input = await wait_for_user_input_callback()
+            user_input = await _wait_for_user_input(default_waiting_message)
             if user_input and user_input.strip():
                 await agent.aupdate_state(config, {"messages": [HumanMessage(content=user_input)]})
                 
