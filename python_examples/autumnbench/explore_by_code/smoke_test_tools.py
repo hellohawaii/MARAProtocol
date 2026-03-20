@@ -7,8 +7,8 @@ from pathlib import Path
 
 from env_wrapper import (
     execute_run_command,
+    get_env_tools,
     get_runtime_info,
-    get_langchain_tools,
 )
 
 
@@ -61,7 +61,7 @@ def main() -> int:
     print(f"Persistent file exists: {out_file.exists()} -> {out_file}")
 
     print_header("3) LangChain tools")
-    tools = get_langchain_tools(env_name=args.env_name)
+    tools = get_env_tools(env_name=args.env_name)
     run_tool = next(t for t in tools if t.name == "run_command_in_docker")
 
     tool_run_result = run_tool.invoke({"command": "python -c \"print('tool run ok')\""})

@@ -1,8 +1,9 @@
-"""Minimal shell-tool ReAct explorer + code synthesis agent.
+"""Minimal ReAct explorer + code synthesis agent.
 
 This script intentionally does not encode a workflow for exploration/refinement.
-The LLM gets one shell tool and decides how to explore, write Python files,
-run check_traj_example.py, and when to stop.
+The LLM gets environment tools plus lightweight HCI phase-declaration tools and
+decides how to explore, write Python files, run check_traj_example.py, and when
+to stop.
 """
 
 import argparse
@@ -29,9 +30,10 @@ for _p in [str(_AUTUMNBENCH_DIR), str(_MARA_ROOT)]:
 from langchain_utils import get_llm  # noqa: E402
 
 from env_wrapper import (  # noqa: E402
-    get_langchain_tools,
+    get_env_tools,
     get_or_create_runtime_info,
 )
+from hci_tools import get_hci_tools  # noqa: E402
 from log_utils import _CHECK_TRAJ_PATTERN  # noqa: E402
 from shell_react_prompt import (  # noqa: E402
     SHELL_REACT_HUMAN_COLLAB_SYSTEM_PROMPT,
@@ -209,7 +211,7 @@ def run_shell_react_agent(
         env_api_base_url=env_api_base_url,
         env_name=env_name,
     )
-    tools = get_langchain_tools(
+    env_tools = get_env_tools(
         docker_image=docker_image,
         timeout_seconds=timeout_seconds,
         dockerfile_path=dockerfile_path,
@@ -217,6 +219,8 @@ def run_shell_react_agent(
         env_api_base_url=env_api_base_url,
         env_name=env_name,
     )
+    hci_tools = get_hci_tools()
+    tools = env_tools + hci_tools
     agent = create_agent(
         model=llm,
         tools=tools,
@@ -378,7 +382,7 @@ async def arun_shell_react_agent(
         env_api_base_url=env_api_base_url,
         env_name=env_name,
     )
-    tools = get_langchain_tools(
+    env_tools = get_env_tools(
         docker_image=docker_image,
         timeout_seconds=timeout_seconds,
         dockerfile_path=dockerfile_path,
@@ -386,6 +390,8 @@ async def arun_shell_react_agent(
         env_api_base_url=env_api_base_url,
         env_name=env_name,
     )
+    hci_tools = get_hci_tools()
+    tools = env_tools + hci_tools
     
     checkpointer = MemorySaver()
     

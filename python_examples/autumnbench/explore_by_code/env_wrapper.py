@@ -450,7 +450,7 @@ def get_or_create_runtime_info(
 	return runtime.get_runtime_info()
 
 
-def get_langchain_tools(
+def get_env_tools(
 	docker_image: Optional[str] = None,
 	timeout_seconds: int = 15,
 	dockerfile_path: Optional[str] = None,
@@ -504,5 +504,5 @@ __all__: List[str] = [
 	"execute_run_command",
 	"get_runtime_info",
 	"get_or_create_runtime_info",
-	"get_langchain_tools",
+	"get_env_tools",
 ]

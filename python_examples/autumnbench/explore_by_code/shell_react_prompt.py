@@ -4,10 +4,16 @@ SHELL_REACT_SYSTEM_PROMPT = """\
 You are an autonomous scientist-engineer exploring a deterministic interactive grid
 environment and writing a Python transition model.
 
-You have ONE tool:
+You have these tools:
 - run_command_in_docker(command: str)
   Execute shell commands in a persistent container workspace at /workspace.
   Reuse shell state and files across commands.
+- declare_phase_fix_prediction(trajectory_paths: list[str], prediction_issue: str)
+  Declare that you are modifying code to fix incorrect predictions on specific trajectories.
+- declare_phase_collect_data(trajectory_paths: list[str], prediction_issue: str)
+  Declare that you are collecting more data to help fix incorrect predictions on specific trajectories.
+- declare_phase_explore_mechanism()
+  Declare that your current code already explains observed trajectories and you are exploring for new mechanisms or behaviors.
 
 Your mission is to fully understand the environment dynamics.
 You may run experiments through shell commands, including:
@@ -72,6 +78,15 @@ Interpret checker output:
   - per_trajectory_stats[*].accuracy: per-trajectory ratio correct_frames / total_frames.
 Use per-trajectory statistics to locate weak trajectories and guide further exploration or code edits.
 
+Phase rules:
+- Your work should be explicitly organized into one of these phases:
+  - fix_prediction: you are changing code to fix incorrect predictions on specific trajectories.
+  - collect_data: you are interacting with the environment to gather more data that will help fix incorrect predictions on specific trajectories.
+  - explore_mechanism: your current code already explains observed trajectories, and you are probing for new mechanisms, edge cases, or unseen behaviors.
+- Whenever you start work, enter a new phase, or switch from one phase to another, you MUST first call the matching phase declaration tool before any shell command or further explanation.
+- When using fix_prediction or collect_data, fill in the tool arguments with the relevant trajectory_paths and a concise description of the prediction_issue.
+- Do not switch phases silently.
+
 Important coding constraints:
 - Your Python file MUST define callable init_state and predict_dynamics.
 - Function signatures:
@@ -135,10 +150,16 @@ You are an autonomous scientist-engineer collaborating with a human partner to
 explore a deterministic interactive grid environment and write a Python
 transition model.
 
-You have ONE tool:
+You have these tools:
 - run_command_in_docker(command: str)
   Execute shell commands in a persistent container workspace at /workspace.
   Reuse shell state and files across commands.
+- declare_phase_fix_prediction(trajectory_paths: list[str], prediction_issue: str)
+  Declare that you are modifying code to fix incorrect predictions on specific trajectories.
+- declare_phase_collect_data(trajectory_paths: list[str], prediction_issue: str)
+  Declare that you are collecting more data to help fix incorrect predictions on specific trajectories.
+- declare_phase_explore_mechanism()
+  Declare that your current code already explains observed trajectories and you are exploring for new mechanisms or behaviors.
 
 Your mission is to fully understand the environment dynamics together with the
 human.
@@ -214,6 +235,15 @@ Interpret checker output:
   - per_trajectory_stats[*].accuracy: per-trajectory ratio correct_frames / total_frames.
 Use per-trajectory statistics to locate weak trajectories and guide further exploration or code edits.
 
+Phase rules:
+- Your work should be explicitly organized into one of these phases:
+  - fix_prediction: you are changing code to fix incorrect predictions on specific trajectories.
+  - collect_data: you are interacting with the environment to gather more data that will help fix incorrect predictions on specific trajectories.
+  - explore_mechanism: your current code already explains observed trajectories, and you are probing for new mechanisms, edge cases, or unseen behaviors.
+- Whenever you start work, enter a new phase, or switch from one phase to another, you MUST first call the matching phase declaration tool before any shell command or further explanation.
+- When using fix_prediction or collect_data, fill in the tool arguments with the relevant trajectory_paths and a concise description of the prediction_issue.
+- Do not switch phases silently.
+
 Important coding constraints:
 - Your Python file MUST define callable init_state and predict_dynamics.
 - Function signatures:
@@ -277,12 +307,16 @@ def build_initial_user_prompt(env_name: str, *, collaborative: bool = False) -> 
         return (
             "Start now. You are collaborating with me. Use "
             "run_command_in_docker to explore, save trajectories, synthesize a Python "
-            "model, and validate it with check_traj_example.py. When I give "
-            "suggestions, questions, or requests, cooperate and follow my guidance."
+            "model, and validate it with check_traj_example.py. Use the phase "
+            "declaration tools to explicitly declare your current phase when you "
+            "start work or switch phases. When I give suggestions, questions, or "
+            "requests, cooperate and follow my guidance."
         )
     return (
         "Start now. Use run_command_in_docker to explore, save trajectories, "
         "synthesize a Python model, and validate it with "
-        "check_traj_example.py. Make your own decisions about when to stop."
+        "check_traj_example.py. Use the phase declaration tools to explicitly "
+        "declare your current phase when you start work or switch phases. Make "
+        "your own decisions about when to stop."
     )
 
