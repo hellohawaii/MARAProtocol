@@ -39,11 +39,52 @@ from log_utils import _CHECK_TRAJ_PATTERN  # noqa: E402
 from shell_react_prompt import (  # noqa: E402
     SHELL_REACT_HUMAN_COLLAB_SYSTEM_PROMPT,
     SHELL_REACT_MODEL_ORCHESTRATED_SYSTEM_PROMPT,
+    SHELL_REACT_PLANNING_HUMAN_COLLAB_SYSTEM_PROMPT,
+    SHELL_REACT_PLANNING_MODEL_ORCHESTRATED_SYSTEM_PROMPT,
+    SHELL_REACT_PLANNING_SYSTEM_PROMPT,
     SHELL_REACT_SYSTEM_PROMPT,
     build_initial_user_prompt,
 )
 
 DEFAULT_DOCKERFILE_PATH = str((_FILE_DIR / "Dockerfile.tool").resolve())
+
+_EXAMPLE_BENCHMARK_DIR = (_AUTUMNBENCH_DIR / "example_benchmark").resolve()
+
+from planning_utils import (  # noqa: E402
+    load_color_dict,
+    load_planning_data,
+    goal_to_color_grid,
+    color_grid_to_scene_graph,
+    mask_to_positions,
+)
+
+
+def _load_planning_goal(env_name: str):
+    """Load planning goal/mask and convert to scene_graph format.
+
+    Returns (goal_scene_graph_json, mask_scene_graph_json) as JSON strings,
+    or (None, None) if no planning data exists.
+    """
+    result = load_planning_data(_EXAMPLE_BENCHMARK_DIR, env_name)
+    if result is None:
+        return None, None
+
+    raw_goal, raw_mask = result
+    color_dict = load_color_dict(_EXAMPLE_BENCHMARK_DIR)
+    goal_color = goal_to_color_grid(raw_goal, color_dict)
+    goal_sg = color_grid_to_scene_graph(goal_color)
+
+    grid_size = len(goal_color)
+    all_ones = all(raw_mask[r][c] == 1 for r in range(grid_size) for c in range(grid_size))
+    if all_ones:
+        mask_repr = "FULL_GRID"
+    else:
+        mask_repr = mask_to_positions(raw_mask)
+
+    return (
+        json.dumps(goal_sg, indent=2),
+        json.dumps(mask_repr, indent=2) if not isinstance(mask_repr, str) else f'"{mask_repr}"',
+    )
 
 
 def _to_jsonable(obj: Any) -> Any:
@@ -193,6 +234,20 @@ def _is_terminal_ai_without_tool_calls(messages: List[Any]) -> bool:
     return len(tool_calls) == 0
 
 
+def _select_system_prompt(task_mode: str, collaborative: bool, orchestrator: str) -> str:
+    if task_mode == "planning":
+        if orchestrator == "model":
+            return SHELL_REACT_PLANNING_MODEL_ORCHESTRATED_SYSTEM_PROMPT
+        if collaborative:
+            return SHELL_REACT_PLANNING_HUMAN_COLLAB_SYSTEM_PROMPT
+        return SHELL_REACT_PLANNING_SYSTEM_PROMPT
+    if orchestrator == "model":
+        return SHELL_REACT_MODEL_ORCHESTRATED_SYSTEM_PROMPT
+    if collaborative:
+        return SHELL_REACT_HUMAN_COLLAB_SYSTEM_PROMPT
+    return SHELL_REACT_SYSTEM_PROMPT
+
+
 def run_shell_react_agent(
     env_name: str,
     *,
@@ -204,6 +259,7 @@ def run_shell_react_agent(
     docker_build_context: Optional[str] = None,
     env_api_base_url: str = "http://host.docker.internal:8002",
     collaborative: bool = False,
+    task_mode: str = "explore",
 ) -> Dict[str, Any]:
     llm = get_llm(model=llm_model)
     runtime_info = get_or_create_runtime_info(
@@ -212,6 +268,7 @@ def run_shell_react_agent(
         docker_build_context=docker_build_context,
         env_api_base_url=env_api_base_url,
         env_name=env_name,
+        task_mode=task_mode,
     )
     env_tools = get_env_tools(
         docker_image=docker_image,
@@ -220,17 +277,15 @@ def run_shell_react_agent(
         docker_build_context=docker_build_context,
         env_api_base_url=env_api_base_url,
         env_name=env_name,
+        task_mode=task_mode,
     )
     hci_tools = get_hci_tools()
     tools = env_tools + hci_tools
+    system_prompt = _select_system_prompt(task_mode, collaborative, "developer")
     agent = create_agent(
         model=llm,
         tools=tools,
-        system_prompt=(
-            SHELL_REACT_HUMAN_COLLAB_SYSTEM_PROMPT
-            if collaborative
-            else SHELL_REACT_SYSTEM_PROMPT
-        ),
+        system_prompt=system_prompt,
         # system_prompt = "You are a chat bot with shell tool.",
         middleware=[
             ModelCallLimitMiddleware(
@@ -240,8 +295,16 @@ def run_shell_react_agent(
         ],
     )
 
-    user_prompt = build_initial_user_prompt(env_name, collaborative=collaborative)
-    # user_prompt = "Hi!"
+    goal_sg, mask_sg = (None, None)
+    if task_mode == "planning":
+        goal_sg, mask_sg = _load_planning_goal(env_name)
+    user_prompt = build_initial_user_prompt(
+        env_name,
+        collaborative=collaborative,
+        task_mode=task_mode,
+        goal_scene_graph=goal_sg or "",
+        mask_scene_graph=mask_sg or "",
+    )
 
     # Persist logs under the same run_id used by llm_workspace_runs.
     run_id = runtime_info.get("run_id")
@@ -364,6 +427,7 @@ async def arun_shell_react_agent(
     wait_for_user_input_callback=None,
     collaborative: bool = False,
     orchestrator: str = "developer",
+    task_mode: str = "explore",
     pause_gate: Optional[asyncio.Event] = None,
     notify_paused_callback=None,
     input_queue: Optional[asyncio.Queue] = None,
@@ -387,6 +451,7 @@ async def arun_shell_react_agent(
         docker_build_context=docker_build_context,
         env_api_base_url=env_api_base_url,
         env_name=env_name,
+        task_mode=task_mode,
     )
     env_tools = get_env_tools(
         docker_image=docker_image,
@@ -395,6 +460,7 @@ async def arun_shell_react_agent(
         docker_build_context=docker_build_context,
         env_api_base_url=env_api_base_url,
         env_name=env_name,
+        task_mode=task_mode,
     )
     hci_tools = get_hci_tools()
     tools = env_tools + hci_tools
@@ -403,12 +469,7 @@ async def arun_shell_react_agent(
         ask_human_tool = get_ask_human_tool(wait_for_user_input_callback)
         tools = tools + [ask_human_tool]
 
-    if orchestrator == "model":
-        system_prompt = SHELL_REACT_MODEL_ORCHESTRATED_SYSTEM_PROMPT
-    elif collaborative:
-        system_prompt = SHELL_REACT_HUMAN_COLLAB_SYSTEM_PROMPT
-    else:
-        system_prompt = SHELL_REACT_SYSTEM_PROMPT
+    system_prompt = _select_system_prompt(task_mode, collaborative, orchestrator)
 
     checkpointer = MemorySaver()
 
@@ -430,8 +491,17 @@ async def arun_shell_react_agent(
         interrupt_after=["tools"] if use_interrupt else None,
     )
 
-    user_prompt = build_initial_user_prompt(env_name, collaborative=collaborative, orchestrator=orchestrator)
-    # user_prompt = "List current files"
+    goal_sg, mask_sg = (None, None)
+    if task_mode == "planning":
+        goal_sg, mask_sg = _load_planning_goal(env_name)
+    user_prompt = build_initial_user_prompt(
+        env_name,
+        collaborative=collaborative,
+        orchestrator=orchestrator,
+        task_mode=task_mode,
+        goal_scene_graph=goal_sg or "",
+        mask_scene_graph=mask_sg or "",
+    )
 
     # Persist logs under the same run_id used by llm_workspace_runs.
     run_id = runtime_info.get("run_id")
@@ -666,6 +736,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="http://host.docker.internal:8002",
         help="Base URL for env API server reachable from container.",
     )
+    parser.add_argument(
+        "--task-mode",
+        default="explore",
+        choices=["explore", "planning"],
+        help="Task mode: 'explore' for free exploration, 'planning' for goal-directed.",
+    )
     return parser
 
 
@@ -680,6 +756,7 @@ def main() -> int:
         dockerfile_path=args.dockerfile_path,
         docker_build_context=args.docker_build_context,
         env_api_base_url=args.env_api_base_url,
+        task_mode=args.task_mode,
     )
 
     print(f"Run finished. messages={result.get('num_messages')}")

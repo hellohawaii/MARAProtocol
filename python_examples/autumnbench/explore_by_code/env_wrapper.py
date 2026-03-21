@@ -57,6 +57,7 @@ class _DockerRuntime:
 		docker_build_context: Optional[str],
 		env_api_base_url: str,
 		env_name: Optional[str],
+		task_mode: str = "explore",
 	) -> None:
 		self.docker_image = docker_image
 		self.dockerfile_path = Path(dockerfile_path).resolve() if dockerfile_path else None
@@ -65,6 +66,7 @@ class _DockerRuntime:
 		)
 		self.env_api_base_url = env_api_base_url
 		self.env_name = env_name
+		self.task_mode = task_mode
 		self.client = docker.from_env()
 		self.container = None
 		self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -197,6 +199,33 @@ class _DockerRuntime:
 		if not parsed.get("ok"):
 			raise ValueError(f"Env API rejected env_name switch: {parsed}")
 
+	def _set_env_api_task_mode(self) -> None:
+		url = "http://127.0.0.1:8002/_set_task_mode"
+		payload = {"task_mode": self.task_mode}
+		body = json.dumps(payload).encode("utf-8")
+		req = urlrequest.Request(
+			url,
+			data=body,
+			headers={"Content-Type": "application/json"},
+			method="POST",
+		)
+		try:
+			with urlrequest.urlopen(req, timeout=10) as resp:
+				raw = resp.read().decode("utf-8")
+		except urlerror.HTTPError as exc:
+			msg = exc.read().decode("utf-8", errors="replace")
+			raise ValueError(f"Failed to set task mode (HTTP {exc.code}): {msg}") from exc
+		except urlerror.URLError as exc:
+			raise ValueError(f"Failed to reach env API at {url}: {exc}") from exc
+
+		try:
+			parsed = json.loads(raw)
+		except json.JSONDecodeError as exc:
+			raise ValueError(f"Invalid /_set_task_mode response: {raw}") from exc
+
+		if not parsed.get("ok"):
+			raise ValueError(f"Env API rejected task_mode switch: {parsed}")
+
 	def _ensure_container_running(self) -> None:
 		if self.container is not None:
 			try:
@@ -216,6 +245,7 @@ class _DockerRuntime:
 		self._prepare_run_workspace()
 		self._set_env_api_workspace()
 		self._set_env_api_env_name()
+		self._set_env_api_task_mode()
 
 		try:
 			self.container = self.client.containers.run(
@@ -300,6 +330,7 @@ def _get_runtime(
 	docker_build_context: Optional[str],
 	env_api_base_url: str,
 	env_name: Optional[str],
+	task_mode: str = "explore",
 ) -> _DockerRuntime:
 	global _RUNTIME_SESSION
 	global _RUNTIME_KEY
@@ -309,6 +340,7 @@ def _get_runtime(
 		str(Path(docker_build_context).resolve()) if docker_build_context else None,
 		env_api_base_url,
 		env_name,
+		task_mode,
 	)
 	with _RUNTIME_LOCK:
 		if _RUNTIME_SESSION is not None and _RUNTIME_KEY == requested_key:
@@ -320,6 +352,7 @@ def _get_runtime(
 			docker_build_context=docker_build_context,
 			env_api_base_url=env_api_base_url,
 			env_name=env_name,
+			task_mode=task_mode,
 		)
 		if _RUNTIME_SESSION is None:
 			_RUNTIME_SESSION = candidate
@@ -340,6 +373,7 @@ def execute_run_command(
 	docker_build_context: Optional[str] = None,
 	env_api_base_url: str = "http://host.docker.internal:8002",
 	env_name: Optional[str] = None,
+	task_mode: str = "explore",
 ) -> str:
 	ensure_workspace_dirs()
 	ts_start = time.time()
@@ -351,6 +385,7 @@ def execute_run_command(
 			docker_build_context=docker_build_context,
 			env_api_base_url=env_api_base_url,
 			env_name=env_name,
+			task_mode=task_mode,
 		)
 		result = runtime.exec_command(command=command, timeout_seconds=timeout_seconds)
 		ts_end = time.time()
@@ -438,6 +473,7 @@ def get_or_create_runtime_info(
 	docker_build_context: Optional[str] = None,
 	env_api_base_url: str = "http://host.docker.internal:8002",
 	env_name: Optional[str] = None,
+	task_mode: str = "explore",
 ) -> dict:
 	ensure_workspace_dirs()
 	runtime = _get_runtime(
@@ -446,6 +482,7 @@ def get_or_create_runtime_info(
 		docker_build_context=docker_build_context,
 		env_api_base_url=env_api_base_url,
 		env_name=env_name,
+		task_mode=task_mode,
 	)
 	return runtime.get_runtime_info()
 
@@ -457,6 +494,7 @@ def get_env_tools(
 	docker_build_context: Optional[str] = None,
 	env_api_base_url: str = "http://host.docker.internal:8002",
 	env_name: Optional[str] = None,
+	task_mode: str = "explore",
 ):
 	try:
 		from langchain_core.tools import StructuredTool
@@ -476,6 +514,7 @@ def get_env_tools(
 			docker_build_context=docker_build_context,
 			env_api_base_url=env_api_base_url,
 			env_name=env_name,
+			task_mode=task_mode,
 		)
 
 	async def _arun_command(command: str) -> str:

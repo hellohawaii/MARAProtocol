@@ -46,6 +46,11 @@ def get_hci_tools():
         print(message)
         return message
 
+    def declare_phase_run_trial() -> str:
+        message = "[Phase] run_trial"
+        print(message)
+        return message
+
     return [
         StructuredTool.from_function(
             func=declare_phase_fix_prediction,
@@ -72,6 +77,17 @@ def get_hci_tools():
                 "Declare that the current code already explains observed "
                 "trajectories and you are now exploring for new mechanisms or "
                 "new behaviors."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=declare_phase_run_trial,
+            name="declare_phase_run_trial",
+            description=(
+                "Declare that you have built sufficient understanding of the "
+                "environment's world model to formulate a goal-reaching plan, "
+                "and are now starting a trial attempt to achieve the goal. "
+                "Use this only when you are ready to commit to a concrete "
+                "action sequence — not simply because the task is to reach a goal."
             ),
         ),
     ]

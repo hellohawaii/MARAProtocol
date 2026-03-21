@@ -25,9 +25,23 @@ for path in (str(MARA_ROOT), str(PY_EXAMPLES_DIR), str(AUTUMNBENCH_DIR)):
 try:
     from .log_utils import ensure_logs_root_dir
     from .traj_visualization_utils import save_trajectory_visualization
+    from .planning_utils import (
+        load_color_dict,
+        load_planning_data,
+        goal_to_color_grid,
+        scene_graph_to_color_grid,
+        check_grid_same,
+    )
 except ImportError:  # pragma: no cover
     from log_utils import ensure_logs_root_dir
     from traj_visualization_utils import save_trajectory_visualization
+    from planning_utils import (
+        load_color_dict,
+        load_planning_data,
+        goal_to_color_grid,
+        scene_graph_to_color_grid,
+        check_grid_same,
+    )
 
 autumnstdlib = importlib.import_module("autumnbench.autumnstdlib").autumnstdlib
 Interpreter = importlib.import_module("interpreter_module").Interpreter
@@ -73,6 +87,10 @@ class SetEnvNameRequest(BaseModel):
     env_name: str = Field(..., description="Environment name, e.g. 7XF97")
 
 
+class SetTaskModeRequest(BaseModel):
+    task_mode: str = Field(..., description="Task mode: 'explore' or 'planning'")
+
+
 class EnvSession:
     def __init__(self) -> None:
         self._lock = Lock()
@@ -87,6 +105,10 @@ class EnvSession:
         self.current_state: Optional[Dict[str, Any]] = None
         self.actions: List[str] = []
         self.transitions: List[Dict[str, Any]] = []
+        self.task_mode: str = "explore"
+        self._goal_grid: Optional[List[List[str]]] = None
+        self._goal_mask: Optional[List[List[int]]] = None
+        self._color_dict: Optional[Dict[int, str]] = None
         self._ensure_workspace_dirs()
 
     def _ensure_workspace_dirs(self) -> None:
@@ -121,6 +143,37 @@ class EnvSession:
         with self._lock:
             self.configured_env_name = env_name
             return {"ok": True}
+
+    def set_task_mode(self, task_mode: str) -> Dict[str, Any]:
+        with self._lock:
+            if task_mode not in ("explore", "planning"):
+                raise ValueError(f"Invalid task_mode: {task_mode}. Must be 'explore' or 'planning'.")
+            self.task_mode = task_mode
+            if task_mode == "planning":
+                if not self.configured_env_name:
+                    raise RuntimeError("Environment name must be set before setting task_mode to 'planning'.")
+                data_dir = (AUTUMNBENCH_DIR / "example_benchmark").resolve()
+                result = load_planning_data(data_dir, self.configured_env_name)
+                if result is None:
+                    raise FileNotFoundError(
+                        f"Planning data not found for env '{self.configured_env_name}'"
+                    )
+                raw_goal, raw_mask = result
+                self._color_dict = load_color_dict(data_dir)
+                self._goal_grid = goal_to_color_grid(raw_goal, self._color_dict)
+                self._goal_mask = raw_mask
+            else:
+                self._goal_grid = None
+                self._goal_mask = None
+            return {"ok": True, "task_mode": self.task_mode}
+
+    def _check_goal_reached(self) -> bool:
+        if self._goal_grid is None or self._goal_mask is None or self.interpreter is None:
+            return False
+        raw_state = json.loads(self.interpreter.render_all())
+        bg = self.interpreter.get_background()
+        current_grid = scene_graph_to_color_grid(raw_state, bg)
+        return check_grid_same(current_grid, self._goal_grid, self._goal_mask)
 
     def _load_program(self, env_name: str, data_dir: Path) -> str:
         program_path = data_dir / "programs" / f"{env_name}.sexp"
@@ -215,6 +268,11 @@ class EnvSession:
             self.actions.append(action)
             self.current_state = next_state
 
+            if self.task_mode == "planning":
+                return {
+                    "state": next_state,
+                    "goal_reached": self._check_goal_reached(),
+                }
             return next_state
 
     def save_trajectory(self, filename: Optional[str]) -> Dict[str, Any]:
@@ -283,6 +341,14 @@ def set_workspace(payload: SetWorkspaceRequest) -> Dict[str, Any]:
 def set_env_name(payload: SetEnvNameRequest) -> Dict[str, Any]:
     try:
         return session.set_env_name(payload.env_name)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/_set_task_mode")
+def set_task_mode(payload: SetTaskModeRequest) -> Dict[str, Any]:
+    try:
+        return session.set_task_mode(payload.task_mode)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -35,8 +35,14 @@ class RemoteEnvWrapper:
     def reset(self) -> Dict[str, Any]:
         return self._post("/reset", {})
 
-    def step(self, action: str) -> Dict[str, Any]:
-        return self._post("/step", {"action": action})
+    def step(self, action: str):
+        result = self._post("/step", {"action": action})
+        if isinstance(result, dict) and "goal_reached" in result:
+            state = result["state"]
+            goal_reached = result["goal_reached"]
+            print(f"goal_reached: {goal_reached}")
+            return state, goal_reached
+        return result
 
     def save_trajectory(self, filename: Optional[str] = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {}
