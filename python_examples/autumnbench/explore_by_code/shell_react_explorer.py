@@ -7,6 +7,7 @@ to stop.
 """
 
 import argparse
+import asyncio
 import json
 import re
 import sys
@@ -361,6 +362,10 @@ async def arun_shell_react_agent(
     yield_state_callback=None,
     wait_for_user_input_callback=None,
     collaborative: bool = False,
+    orchestrator: str = "developer",
+    pause_gate: Optional[asyncio.Event] = None,
+    notify_paused_callback=None,
+    input_queue: Optional[asyncio.Queue] = None,
 ) -> Dict[str, Any]:
     terminal_waiting_message = "AI thinks exploration is complete. Waiting for input!"
     default_waiting_message = "Waiting for input!"
@@ -411,7 +416,7 @@ async def arun_shell_react_agent(
             )
         ],
         checkpointer=checkpointer,
-        interrupt_after=["tools"] if wait_for_user_input_callback else None,
+        interrupt_after=["tools"] if (wait_for_user_input_callback or orchestrator == "user") else None,
     )
 
     user_prompt = build_initial_user_prompt(env_name, collaborative=collaborative)
@@ -519,18 +524,58 @@ async def arun_shell_react_agent(
 
         # graph paused or finished
         state = await agent.aget_state(config)
+
         if not state.next:
-            if wait_for_user_input_callback and _is_terminal_ai_without_tool_calls(final_messages):
-                user_input = await _wait_for_user_input(terminal_waiting_message)
+            # Agent finished (terminal AI message without tool calls, or turn limit)
+            if _is_terminal_ai_without_tool_calls(final_messages):
+                if orchestrator == "user" and pause_gate and notify_paused_callback:
+                    # In user mode: always use the pause mechanism for terminal
+                    # so the frontend gets paused_terminal state and enables input.
+                    await notify_paused_callback("paused_terminal")
+                    pause_gate.clear()
+                    await pause_gate.wait()
+                    human_msg = None
+                    if input_queue:
+                        try:
+                            human_msg = input_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            pass
+                    if human_msg and human_msg.strip():
+                        input_state = {"messages": [HumanMessage(content=human_msg)]}
+                        continue
+                    break
+                else:
+                    # developer mode (or user mode without pause_gate): ask for input
+                    if wait_for_user_input_callback:
+                        user_input = await _wait_for_user_input(terminal_waiting_message)
+                        if user_input and user_input.strip():
+                            input_state = {"messages": [HumanMessage(content=user_input)]}
+                            continue
+                    break
+            break
+
+        # state.next is non-empty: agent wants to continue (interrupt_after checkpoint)
+        if orchestrator == "user":
+            if pause_gate and not pause_gate.is_set():
+                if notify_paused_callback:
+                    await notify_paused_callback("paused")
+                await pause_gate.wait()
+                human_msg = None
+                if input_queue:
+                    try:
+                        human_msg = input_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                if human_msg and human_msg.strip():
+                    await agent.aupdate_state(config, {"messages": [HumanMessage(content=human_msg)]})
+            input_state = None
+            continue
+        else:
+            # developer mode: ask for input when state changed
+            if state_changed and wait_for_user_input_callback:
+                user_input = await _wait_for_user_input(default_waiting_message)
                 if user_input and user_input.strip():
-                    input_state = {"messages": [HumanMessage(content=user_input)]}
-                    continue
-            break # finished
-            
-        if state_changed and wait_for_user_input_callback:
-            user_input = await _wait_for_user_input(default_waiting_message)
-            if user_input and user_input.strip():
-                await agent.aupdate_state(config, {"messages": [HumanMessage(content=user_input)]})
+                    await agent.aupdate_state(config, {"messages": [HumanMessage(content=user_input)]})
                 
     final_response = ""
     if final_messages:
