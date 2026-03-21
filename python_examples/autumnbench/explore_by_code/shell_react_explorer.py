@@ -34,10 +34,11 @@ from env_wrapper import (  # noqa: E402
     get_env_tools,
     get_or_create_runtime_info,
 )
-from hci_tools import get_hci_tools  # noqa: E402
+from hci_tools import get_ask_human_tool, get_hci_tools  # noqa: E402
 from log_utils import _CHECK_TRAJ_PATTERN  # noqa: E402
 from shell_react_prompt import (  # noqa: E402
     SHELL_REACT_HUMAN_COLLAB_SYSTEM_PROMPT,
+    SHELL_REACT_MODEL_ORCHESTRATED_SYSTEM_PROMPT,
     SHELL_REACT_SYSTEM_PROMPT,
     build_initial_user_prompt,
 )
@@ -397,18 +398,28 @@ async def arun_shell_react_agent(
     )
     hci_tools = get_hci_tools()
     tools = env_tools + hci_tools
-    
+
+    if orchestrator == "model" and wait_for_user_input_callback:
+        ask_human_tool = get_ask_human_tool(wait_for_user_input_callback)
+        tools = tools + [ask_human_tool]
+
+    if orchestrator == "model":
+        system_prompt = SHELL_REACT_MODEL_ORCHESTRATED_SYSTEM_PROMPT
+    elif collaborative:
+        system_prompt = SHELL_REACT_HUMAN_COLLAB_SYSTEM_PROMPT
+    else:
+        system_prompt = SHELL_REACT_SYSTEM_PROMPT
+
     checkpointer = MemorySaver()
-    
+
+    use_interrupt = (orchestrator == "user") or (
+        orchestrator == "developer" and wait_for_user_input_callback
+    )
+
     agent = create_agent(
         model=llm,
         tools=tools,
-        system_prompt=(
-            SHELL_REACT_HUMAN_COLLAB_SYSTEM_PROMPT
-            if collaborative
-            else SHELL_REACT_SYSTEM_PROMPT
-        ),
-        # system_prompt = "You are a chat bot with shell tool.",
+        system_prompt=system_prompt,
         middleware=[
             ModelCallLimitMiddleware(
                 run_limit=max_turns,
@@ -416,10 +427,10 @@ async def arun_shell_react_agent(
             )
         ],
         checkpointer=checkpointer,
-        interrupt_after=["tools"] if (wait_for_user_input_callback or orchestrator == "user") else None,
+        interrupt_after=["tools"] if use_interrupt else None,
     )
 
-    user_prompt = build_initial_user_prompt(env_name, collaborative=collaborative)
+    user_prompt = build_initial_user_prompt(env_name, collaborative=collaborative, orchestrator=orchestrator)
     # user_prompt = "List current files"
 
     # Persist logs under the same run_id used by llm_workspace_runs.
@@ -528,7 +539,11 @@ async def arun_shell_react_agent(
         if not state.next:
             # Agent finished (terminal AI message without tool calls, or turn limit)
             if _is_terminal_ai_without_tool_calls(final_messages):
-                if orchestrator == "user" and pause_gate and notify_paused_callback:
+                if orchestrator == "model":
+                    # Model mode: the model decided to stop. It should have used
+                    # ask_human before stopping if it wanted human confirmation.
+                    break
+                elif orchestrator == "user" and pause_gate and notify_paused_callback:
                     # In user mode: always use the pause mechanism for terminal
                     # so the frontend gets paused_terminal state and enables input.
                     await notify_paused_callback("paused_terminal")
@@ -554,7 +569,9 @@ async def arun_shell_react_agent(
                     break
             break
 
-        # state.next is non-empty: agent wants to continue (interrupt_after checkpoint)
+        # state.next is non-empty: agent wants to continue (interrupt_after checkpoint).
+        # Model mode never uses interrupt_after, so this branch is only hit by
+        # developer and user modes.
         if orchestrator == "user":
             if pause_gate and not pause_gate.is_set():
                 if notify_paused_callback:
@@ -571,7 +588,7 @@ async def arun_shell_react_agent(
             input_state = None
             continue
         else:
-            # developer mode: ask for input when state changed
+            # developer (or model fallback): ask for input when state changed
             if state_changed and wait_for_user_input_callback:
                 user_input = await _wait_for_user_input(default_waiting_message)
                 if user_input and user_input.strip():

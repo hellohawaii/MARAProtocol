@@ -1,6 +1,6 @@
-"""Human-collaboration tools for explicit phase declarations."""
+"""Human-collaboration tools for explicit phase declarations and model-initiated human interaction."""
 
-from typing import List
+from typing import Any, Callable, Coroutine, List, Optional
 
 
 def _format_traj_list(trajectory_paths: List[str]) -> str:
@@ -77,4 +77,46 @@ def get_hci_tools():
     ]
 
 
-__all__ = ["get_hci_tools"]
+def get_ask_human_tool(
+    wait_for_human_callback: Callable[[str], Coroutine[Any, Any, Optional[str]]],
+):
+    """Create an ask_human tool that delegates to the provided async callback.
+
+    The callback should send the question to the human (e.g. via WebSocket),
+    block until a response arrives, and return the response string.
+    The human's answer is returned as a ToolMessage to the model.
+    """
+    try:
+        from langchain_core.tools import StructuredTool
+    except ImportError as exc:
+        raise ImportError(
+            "langchain_core is required to build tools. Install langchain-core first."
+        ) from exc
+
+    async def _ask_human_async(question: str) -> str:
+        print(f"[ask_human] Question to human: {question}")
+        response = await wait_for_human_callback(question)
+        if response and response.strip():
+            print(f"[ask_human] Human responded: {response}")
+            return response
+        print("[ask_human] Human skipped without providing input.")
+        return "(Human skipped without providing input.)"
+
+    def _ask_human_sync(question: str) -> str:
+        raise RuntimeError("ask_human requires an async execution context")
+
+    return StructuredTool.from_function(
+        func=_ask_human_sync,
+        coroutine=_ask_human_async,
+        name="ask_human",
+        description=(
+            "Ask your human collaborator a question and wait for their response. "
+            "Use this when you need guidance, want to confirm a hypothesis, "
+            "need clarification on ambiguous observations, or want human insight "
+            "before committing to a direction. The human's answer is returned "
+            "directly. Do not overuse this — make meaningful progress between asks."
+        ),
+    )
+
+
+__all__ = ["get_hci_tools", "get_ask_human_tool"]
