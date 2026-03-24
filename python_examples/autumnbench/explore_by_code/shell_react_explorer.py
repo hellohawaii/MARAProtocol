@@ -34,7 +34,7 @@ from env_wrapper import (  # noqa: E402
     get_env_tools,
     get_or_create_runtime_info,
 )
-from hci_tools import get_ask_human_tool, get_hci_tools  # noqa: E402
+from hci_tools import get_ask_human_tool, get_finish_tool, get_hci_tools, FINISH_TOOL_NAME  # noqa: E402
 from log_utils import _CHECK_TRAJ_PATTERN  # noqa: E402
 from shell_react_prompt import (  # noqa: E402
     SHELL_REACT_HUMAN_COLLAB_SYSTEM_PROMPT,
@@ -234,6 +234,18 @@ def _is_terminal_ai_without_tool_calls(messages: List[Any]) -> bool:
     return len(tool_calls) == 0
 
 
+def _last_tool_messages_contain(messages: List[Any], tool_name: str) -> bool:
+    """Check whether any trailing ToolMessage was produced by the given tool."""
+    for msg in reversed(messages):
+        msg_type = (getattr(msg, "type", "") or msg.__class__.__name__).lower()
+        if msg_type in ("tool", "toolmessage"):
+            if getattr(msg, "name", None) == tool_name:
+                return True
+        else:
+            break  # stop at the first non-ToolMessage
+    return False
+
+
 def _select_system_prompt(task_mode: str, collaborative: bool, orchestrator: str) -> str:
     if task_mode == "planning":
         if orchestrator == "model":
@@ -279,7 +291,7 @@ def run_shell_react_agent(
         env_name=env_name,
         task_mode=task_mode,
     )
-    hci_tools = get_hci_tools()
+    hci_tools = get_hci_tools(task_mode=task_mode)
     tools = env_tools + hci_tools
     system_prompt = _select_system_prompt(task_mode, collaborative, "developer")
     agent = create_agent(
@@ -462,12 +474,15 @@ async def arun_shell_react_agent(
         env_name=env_name,
         task_mode=task_mode,
     )
-    hci_tools = get_hci_tools()
+    hci_tools = get_hci_tools(task_mode=task_mode)
     tools = env_tools + hci_tools
 
-    if orchestrator == "model" and wait_for_user_input_callback:
-        ask_human_tool = get_ask_human_tool(wait_for_user_input_callback)
-        tools = tools + [ask_human_tool]
+    if orchestrator == "model":
+        if wait_for_user_input_callback:
+            ask_human_tool = get_ask_human_tool(wait_for_user_input_callback)
+            tools = tools + [ask_human_tool]
+        finish_tool = get_finish_tool()
+        tools = tools + [finish_tool]
 
     system_prompt = _select_system_prompt(task_mode, collaborative, orchestrator)
 
@@ -475,7 +490,7 @@ async def arun_shell_react_agent(
 
     use_interrupt = (orchestrator == "user") or (
         orchestrator == "developer" and wait_for_user_input_callback
-    )
+    ) or (orchestrator == "model")
 
     agent = create_agent(
         model=llm,
@@ -610,9 +625,10 @@ async def arun_shell_react_agent(
             # Agent finished (terminal AI message without tool calls, or turn limit)
             if _is_terminal_ai_without_tool_calls(final_messages):
                 if orchestrator == "model":
-                    # Model mode: the model decided to stop. It should have used
-                    # ask_human before stopping if it wanted human confirmation.
-                    break
+                    # Model stopped without finish_task — force continuation.
+                    await agent.aupdate_state(config, {"messages": []}, as_node="tools")
+                    input_state = None
+                    continue
                 elif orchestrator == "user" and pause_gate and notify_paused_callback:
                     # In user mode: always use the pause mechanism for terminal
                     # so the frontend gets paused_terminal state and enables input.
@@ -640,9 +656,12 @@ async def arun_shell_react_agent(
             break
 
         # state.next is non-empty: agent wants to continue (interrupt_after checkpoint).
-        # Model mode never uses interrupt_after, so this branch is only hit by
-        # developer and user modes.
-        if orchestrator == "user":
+        if orchestrator == "model":
+            if _last_tool_messages_contain(final_messages, FINISH_TOOL_NAME):
+                break  # exit — model explicitly signaled completion
+            input_state = None
+            continue  # resume react loop
+        elif orchestrator == "user":
             if pause_gate and not pause_gate.is_set():
                 if notify_paused_callback:
                     await notify_paused_callback("paused")
@@ -658,7 +677,7 @@ async def arun_shell_react_agent(
             input_state = None
             continue
         else:
-            # developer (or model fallback): ask for input when state changed
+            # developer: ask for input when state changed
             if state_changed and wait_for_user_input_callback:
                 user_input = await _wait_for_user_input(default_waiting_message)
                 if user_input and user_input.strip():

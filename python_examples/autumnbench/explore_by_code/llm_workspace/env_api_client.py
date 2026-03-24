@@ -40,7 +40,7 @@ class RemoteEnvWrapper:
         if isinstance(result, dict) and "goal_reached" in result:
             state = result["state"]
             goal_reached = result["goal_reached"]
-            print(f"goal_reached: {goal_reached}")
+            # print(f"goal_reached: {goal_reached}")
             return state, goal_reached
         return result
 

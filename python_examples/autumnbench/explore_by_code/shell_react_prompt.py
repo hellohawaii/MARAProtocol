@@ -320,6 +320,9 @@ You have these tools:
 - ask_human(question: str)
   Ask your human collaborator a question and wait for their response. The response
   is returned as the tool result. Use this strategically (see collaboration rules).
+- finish_task()
+  Signal that you have completed your work and are ready to stop. You MUST call
+  this tool to terminate — simply stopping tool calls will not end the session.
 
 Your mission is to fully understand the environment dynamics, with the human
 available as a resource when you choose to engage them.
@@ -462,6 +465,7 @@ Work style:
 - DO NOT stop prematurely just because your current model perfectly explains the currently collected trajectories. You must actively explore the environment to discover new situations and edge cases.
 - Stop only when you are confident that your collected trajectories have fully explored all possible scenarios in the environment and your model can explain all of them.
 - Before concluding, consider using ask_human to verify with the human that your solution looks satisfactory.
+- When you are finished, you MUST call finish_task() to terminate the session. Simply generating a message without tool calls will NOT end the session.
 """
 
 
@@ -837,6 +841,9 @@ You have these tools:
   Declare that your current code already explains observed trajectories and you are exploring for new mechanisms or behaviors.
 - ask_human(question: str)
   Ask your human collaborator a question and wait for their response.
+- finish_task()
+  Signal that you have completed your work and are ready to stop. You MUST call
+  this tool to terminate — simply stopping tool calls will not end the session.
 
 Your mission is to reach the goal state described in the user message,
 with the human available as a resource when you choose to engage them.
@@ -987,6 +994,7 @@ Optional coding constraints (for building a transition model):
 
 Work style:
 - Before concluding, consider using ask_human to verify your solution.
+- When you are finished, you MUST call finish_task() to terminate the session. Simply generating a message without tool calls will NOT end the session.
 """
 
 
@@ -1013,7 +1021,8 @@ def build_initial_user_prompt(
                 "and reach the goal state. Use the phase declaration tools to declare "
                 "your current phase when you start work or switch phases. You have a "
                 "human collaborator available via the ask_human tool — use it "
-                "strategically when you need guidance."
+                "strategically when you need guidance. "
+                "When you are finished, call finish_task to end the session."
                 + goal_block
             )
         if collaborative:
@@ -1040,7 +1049,8 @@ def build_initial_user_prompt(
             "Use the phase declaration tools to explicitly declare your current phase "
             "when you start work or switch phases. You have a human collaborator "
             "available via the ask_human tool — use it strategically when you need "
-            "guidance, want to confirm key decisions, or are unsure about your approach."
+            "guidance, want to confirm key decisions, or are unsure about your approach. "
+            "When you are finished, call finish_task to end the session."
         )
     if collaborative:
         return (

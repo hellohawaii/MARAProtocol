@@ -9,7 +9,7 @@ def _format_traj_list(trajectory_paths: List[str]) -> str:
     return ", ".join(trajectory_paths)
 
 
-def get_hci_tools():
+def get_hci_tools(task_mode: str = "explore"):
     try:
         from langchain_core.tools import StructuredTool
     except ImportError as exc:
@@ -51,7 +51,7 @@ def get_hci_tools():
         print(message)
         return message
 
-    return [
+    tools = [
         StructuredTool.from_function(
             func=declare_phase_fix_prediction,
             name="declare_phase_fix_prediction",
@@ -79,18 +79,54 @@ def get_hci_tools():
                 "new behaviors."
             ),
         ),
-        StructuredTool.from_function(
-            func=declare_phase_run_trial,
-            name="declare_phase_run_trial",
-            description=(
-                "Declare that you have built sufficient understanding of the "
-                "environment's world model to formulate a goal-reaching plan, "
-                "and are now starting a trial attempt to achieve the goal. "
-                "Use this only when you are ready to commit to a concrete "
-                "action sequence — not simply because the task is to reach a goal."
-            ),
-        ),
     ]
+
+    if task_mode == "planning":
+        tools.append(
+            StructuredTool.from_function(
+                func=declare_phase_run_trial,
+                name="declare_phase_run_trial",
+                description=(
+                    "Declare that you have built sufficient understanding of the "
+                    "environment's world model to formulate a goal-reaching plan, "
+                    "and are now starting a trial attempt to achieve the goal. "
+                    "Use this only when you are ready to commit to a concrete "
+                    "action sequence — not simply because the task is to reach a goal."
+                ),
+            ),
+        )
+
+    return tools
+
+
+FINISH_TOOL_NAME = "finish_task"
+
+
+def get_finish_tool():
+    """Create a finish_task tool that signals the agent wants to stop."""
+    try:
+        from langchain_core.tools import StructuredTool
+    except ImportError as exc:
+        raise ImportError(
+            "langchain_core is required to build tools. Install langchain-core first."
+        ) from exc
+
+    def finish_task() -> str:
+        message = "[finish_task] Acknowledged. Session complete."
+        print(message)
+        return message
+
+    return StructuredTool.from_function(
+        func=finish_task,
+        name=FINISH_TOOL_NAME,
+        description=(
+            "Signal that the task is fully complete, or that you have determined "
+            "the task is impossible and you are giving up. "
+            "You MUST call this tool to terminate — simply stopping tool calls "
+            "will not end the session. Only call this when there is truly "
+            "nothing more to do."
+        ),
+    )
 
 
 def get_ask_human_tool(
@@ -135,4 +171,4 @@ def get_ask_human_tool(
     )
 
 
-__all__ = ["get_hci_tools", "get_ask_human_tool"]
+__all__ = ["get_hci_tools", "get_ask_human_tool", "get_finish_tool", "FINISH_TOOL_NAME"]
