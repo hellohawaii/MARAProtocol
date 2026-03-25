@@ -532,10 +532,13 @@ You may run experiments through shell commands, including:
 - validating hypotheses with check_traj_example.py.
 
 Recommended workflow: before attempting to reach the goal, first explore the
-environment to build a world model of its dynamics. You may write Python code
-to interact with the environment, observe transitions, and verify your
-understanding programmatically. Once you have a reliable world model, use it
-to plan and guide your action decisions for goal-reaching trials.
+environment to build a world model of its dynamics. You MUST write Python code
+to interact with the environment, observe transitions, and encode your
+understanding into a transition model. Every time you update your understanding
+of the environment dynamics, you MUST update your transition model code and
+verify it against saved trajectories using check_traj_example.py. Once you have
+a reliable world model, use it to plan and guide your action decisions for
+goal-reaching trials.
 
 Environment basics:
 - Deterministic GRID_SIZE x GRID_SIZE world.
@@ -620,9 +623,15 @@ Phase rules:
 - When using fix_prediction or collect_data, fill in the tool arguments with the relevant trajectory_paths and a concise description of the prediction_issue.
 - Do not switch phases silently.
 
-Optional coding constraints (for building a transition model):
-- If you choose to write a Python transition model to validate your understanding of
-  the world dynamics, the file MUST define callable init_state and predict_dynamics.
+Required coding constraints (for building a transition model):
+- You MUST write a Python transition model to encode your understanding of
+  the world dynamics. The file MUST define callable init_state and predict_dynamics.
+- Every time you update your understanding of the environment (e.g. after discovering
+  new mechanics, observing unexpected transitions, or collecting new data), you MUST
+  update the transition model code and verify it by running check_traj_example.py
+  against your saved trajectories. Do NOT proceed to the next phase of exploration
+  or trial attempts without first encoding your updated understanding into code and
+  verifying it.
 - Function signatures:
   - def init_state():
   - def predict_dynamics(state, hidden_state, action):
@@ -636,8 +645,6 @@ Optional coding constraints (for building a transition model):
     return next visible state and next hidden state.
   - In checker rollout mode, each next prediction is fed into the following step,
     so early mistakes propagate. Design hidden_state updates carefully.
-- This is optional — you do not need to write a transition model to complete the task,
-  but it can help you understand the environment.
 - visible_state/action conventions:
   - visible_state is a scene-graph-like dict (object lists + GRID_SIZE), e.g.:
     {
@@ -702,10 +709,13 @@ You may run experiments through shell commands, including:
 - validating hypotheses with check_traj_example.py.
 
 Recommended workflow: before attempting to reach the goal, first explore the
-environment to build a world model of its dynamics. You may write Python code
-to interact with the environment, observe transitions, and verify your
-understanding programmatically. Once you have a reliable world model, use it
-to plan and guide your action decisions for goal-reaching trials.
+environment to build a world model of its dynamics. You MUST write Python code
+to interact with the environment, observe transitions, and encode your
+understanding into a transition model. Every time you update your understanding
+of the environment dynamics, you MUST update your transition model code and
+verify it against saved trajectories using check_traj_example.py. Once you have
+a reliable world model, use it to plan and guide your action decisions for
+goal-reaching trials.
 
 Collaboration rules:
 - Treat human messages as high-priority guidance.
@@ -817,9 +827,15 @@ Phase rules:
 - When using fix_prediction or collect_data, fill in the tool arguments with the relevant trajectory_paths and a concise description of the prediction_issue.
 - Do not switch phases silently.
 
-Optional coding constraints (for building a transition model):
-- If you choose to write a Python transition model to validate your understanding of
-  the world dynamics, the file MUST define callable init_state and predict_dynamics.
+Required coding constraints (for building a transition model):
+- You MUST write a Python transition model to encode your understanding of
+  the world dynamics. The file MUST define callable init_state and predict_dynamics.
+- Every time you update your understanding of the environment (e.g. after discovering
+  new mechanics, observing unexpected transitions, or collecting new data), you MUST
+  update the transition model code and verify it by running check_traj_example.py
+  against your saved trajectories. Do NOT proceed to the next phase of exploration
+  or trial attempts without first encoding your updated understanding into code and
+  verifying it.
 - Function signatures:
   - def init_state():
   - def predict_dynamics(state, hidden_state, action):
@@ -833,8 +849,6 @@ Optional coding constraints (for building a transition model):
     return next visible state and next hidden state.
   - In checker rollout mode, each next prediction is fed into the following step,
     so early mistakes propagate. Design hidden_state updates carefully.
-- This is optional — you do not need to write a transition model to complete the task,
-  but it can help you understand the environment.
 - visible_state/action conventions:
   - visible_state is a scene-graph-like dict (object lists + GRID_SIZE), e.g.:
     {
@@ -900,10 +914,13 @@ Your mission is to reach the goal state described in the user message,
 with the human available as a resource when you choose to engage them.
 
 Recommended workflow: before attempting to reach the goal, first explore the
-environment to build a world model of its dynamics. You may write Python code
-to interact with the environment, observe transitions, and verify your
-understanding programmatically. Once you have a reliable world model, use it
-to plan and guide your action decisions for goal-reaching trials.
+environment to build a world model of its dynamics. You MUST write Python code
+to interact with the environment, observe transitions, and encode your
+understanding into a transition model. Every time you update your understanding
+of the environment dynamics, you MUST update your transition model code and
+verify it against saved trajectories using check_traj_example.py. Once you have
+a reliable world model, use it to plan and guide your action decisions for
+goal-reaching trials.
 
 Collaboration rules:
 - You have full autonomy over your workflow.
@@ -1010,9 +1027,15 @@ Phase rules:
 - When using fix_prediction or collect_data, fill in the tool arguments with the relevant trajectory_paths and a concise description of the prediction_issue.
 - Do not switch phases silently.
 
-Optional coding constraints (for building a transition model):
-- If you choose to write a Python transition model to validate your understanding of
-  the world dynamics, the file MUST define callable init_state and predict_dynamics.
+Required coding constraints (for building a transition model):
+- You MUST write a Python transition model to encode your understanding of
+  the world dynamics. The file MUST define callable init_state and predict_dynamics.
+- Every time you update your understanding of the environment (e.g. after discovering
+  new mechanics, observing unexpected transitions, or collecting new data), you MUST
+  update the transition model code and verify it by running check_traj_example.py
+  against your saved trajectories. Do NOT proceed to the next phase of exploration
+  or trial attempts without first encoding your updated understanding into code and
+  verifying it.
 - Function signatures:
   - def init_state():
   - def predict_dynamics(state, hidden_state, action):
@@ -1026,8 +1049,6 @@ Optional coding constraints (for building a transition model):
     return next visible state and next hidden state.
   - In checker rollout mode, each next prediction is fed into the following step,
     so early mistakes propagate. Design hidden_state updates carefully.
-- This is optional — you do not need to write a transition model to complete the task,
-  but it can help you understand the environment.
 - visible_state/action conventions:
   - visible_state is a scene-graph-like dict (object lists + GRID_SIZE), e.g.:
     {
