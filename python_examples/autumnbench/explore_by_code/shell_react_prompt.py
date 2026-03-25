@@ -179,6 +179,23 @@ Collaboration rules:
   briefly, and continue executing.
 - Keep your progress transparent to the human and align your next actions with
   their intent.
+- Maintain the human's dashboard: the human sees three information channels, all
+  driven by your actions:
+  1. Current code — updated ONLY when you run check_traj_example.py. The code file
+     you pass as the first argument is read and displayed. Code on disk that was
+     never checked is invisible to the human.
+  2. Saved trajectories — all trajectories persisted via save_trajectory(). The
+     human can select any saved trajectory and replay it visually.
+  3. Automatic evaluation — the dashboard evaluates the current code against every
+     saved trajectory and shows per-trajectory accuracy and match/mismatch status.
+     This updates automatically whenever the code or trajectories change.
+- After significant code changes, run check_traj_example.py to publish the updated
+  code to the human — not only for your own validation.
+- Save trajectories that demonstrate important behaviors, edge cases, or failure
+  modes the human should know about. Use descriptive names.
+- The saved trajectories plus their evaluation results are the primary way the human
+  understands what your code can and cannot explain. Keep this pool well-organized
+  as a shared reference.
 
 Environment basics:
 - Deterministic GRID_SIZE x GRID_SIZE world.
@@ -344,6 +361,23 @@ Collaboration rules:
 - Do NOT call ask_human for trivial questions. Make meaningful progress between asks.
 - When the human responds, integrate their input and continue executing.
 - If the human's response is unclear, make the most reasonable assumption and continue.
+- Maintain the human's dashboard: the human sees three information channels, all
+  driven by your actions:
+  1. Current code — updated ONLY when you run check_traj_example.py. The code file
+     you pass as the first argument is read and displayed. Code on disk that was
+     never checked is invisible to the human.
+  2. Saved trajectories — all trajectories persisted via save_trajectory(). The
+     human can select any saved trajectory and replay it visually.
+  3. Automatic evaluation — the dashboard evaluates the current code against every
+     saved trajectory and shows per-trajectory accuracy and match/mismatch status.
+     This updates automatically whenever the code or trajectories change.
+- After significant code changes, run check_traj_example.py to publish the updated
+  code to the human — not only for your own validation.
+- Save trajectories that demonstrate important behaviors, edge cases, or failure
+  modes the human should know about. Use descriptive names.
+- The saved trajectories plus their evaluation results are the primary way the human
+  understands what your code can and cannot explain. Keep this pool well-organized
+  as a shared reference.
 
 Environment basics:
 - Deterministic GRID_SIZE x GRID_SIZE world.
@@ -682,6 +716,23 @@ Collaboration rules:
   briefly, and continue executing.
 - Keep your progress transparent to the human and align your next actions with
   their intent.
+- Maintain the human's dashboard: the human sees three information channels, all
+  driven by your actions:
+  1. Current code — updated ONLY when you run check_traj_example.py. The code file
+     you pass as the first argument is read and displayed. Code on disk that was
+     never checked is invisible to the human.
+  2. Saved trajectories — all trajectories persisted via save_trajectory(). The
+     human can select any saved trajectory and replay it visually.
+  3. Automatic evaluation — the dashboard evaluates the current code against every
+     saved trajectory and shows per-trajectory accuracy and match/mismatch status.
+     This updates automatically whenever the code or trajectories change.
+- After significant code changes, run check_traj_example.py to publish the updated
+  code to the human — not only for your own validation.
+- Save trajectories that demonstrate important behaviors, edge cases, or failure
+  modes the human should know about. Use descriptive names.
+- The saved trajectories plus their evaluation results are the primary way the human
+  understands what your code can and cannot explain. Keep this pool well-organized
+  as a shared reference.
 
 Environment basics:
 - Deterministic GRID_SIZE x GRID_SIZE world.
@@ -858,6 +909,23 @@ Collaboration rules:
 - You have full autonomy over your workflow.
 - Use ask_human strategically when stuck, uncertain, or want confirmation.
 - Do NOT call ask_human for trivial questions. Make meaningful progress between asks.
+- Maintain the human's dashboard: the human sees three information channels, all
+  driven by your actions:
+  1. Current code — updated ONLY when you run check_traj_example.py. The code file
+     you pass as the first argument is read and displayed. Code on disk that was
+     never checked is invisible to the human.
+  2. Saved trajectories — all trajectories persisted via save_trajectory(). The
+     human can select any saved trajectory and replay it visually.
+  3. Automatic evaluation — the dashboard evaluates the current code against every
+     saved trajectory and shows per-trajectory accuracy and match/mismatch status.
+     This updates automatically whenever the code or trajectories change.
+- After significant code changes, run check_traj_example.py to publish the updated
+  code to the human — not only for your own validation.
+- Save trajectories that demonstrate important behaviors, edge cases, or failure
+  modes the human should know about. Use descriptive names.
+- The saved trajectories plus their evaluation results are the primary way the human
+  understands what your code can and cannot explain. Keep this pool well-organized
+  as a shared reference.
 
 Environment basics:
 - Deterministic GRID_SIZE x GRID_SIZE world.
