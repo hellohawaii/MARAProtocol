@@ -355,6 +355,7 @@ def run_shell_react_agent(
     current_traj_contents = {}
     current_world_model_description = ""
     current_plan = ""
+    current_phase = ""
 
     final_messages: List[Any] = []
     stream_event_count = 0
@@ -389,6 +390,8 @@ def run_shell_react_agent(
                             )
                         elif tool_name == "update_plan":
                             current_plan = str(tool_args.get("plan", ""))
+                        elif tool_name and tool_name.startswith("declare_phase_"):
+                            current_phase = tool_name[len("declare_phase_") :]
 
                 # Capture new trajectories and content
                 msg_type = getattr(last_msg, "type", "") or last_msg.__class__.__name__
@@ -567,6 +570,7 @@ async def arun_shell_react_agent(
     current_traj_contents = {}
     current_world_model_description = ""
     current_plan = ""
+    current_phase = ""
 
     final_messages: List[Any] = []
     stream_event_count = 0
@@ -614,6 +618,10 @@ async def arun_shell_react_agent(
                                 if new_plan != current_plan:
                                     current_plan = new_plan
                                     # state_changed = True
+                            elif tool_name and tool_name.startswith("declare_phase_"):
+                                new_phase = tool_name[len("declare_phase_") :]
+                                if new_phase != current_phase:
+                                    current_phase = new_phase
 
                     # Capture new trajectories and content
                     msg_type = getattr(last_msg, "type", "") or last_msg.__class__.__name__
@@ -659,6 +667,7 @@ async def arun_shell_react_agent(
                         "current_traj_contents": current_traj_contents,
                         "current_world_model_description": current_world_model_description,
                         "current_plan": current_plan,
+                        "current_phase": current_phase,
                         "messages": _messages_to_jsonable(final_messages[-5:]), # last 5 messages
                     })
 
