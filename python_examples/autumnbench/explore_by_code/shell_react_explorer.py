@@ -34,7 +34,7 @@ from env_wrapper import (  # noqa: E402
     get_env_tools,
     get_or_create_runtime_info,
 )
-from hci_tools import get_ask_human_tool, get_finish_tool, get_hci_tools, FINISH_TOOL_NAME  # noqa: E402
+from hci_tools import get_ask_human_tool, get_dashboard_tools, get_finish_tool, get_hci_tools, FINISH_TOOL_NAME  # noqa: E402
 from log_utils import _CHECK_TRAJ_PATTERN  # noqa: E402
 from shell_react_prompt import (  # noqa: E402
     SHELL_REACT_HUMAN_COLLAB_SYSTEM_PROMPT,
@@ -246,6 +246,20 @@ def _last_tool_messages_contain(messages: List[Any], tool_name: str) -> bool:
     return False
 
 
+def _tool_call_args(tool_call: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize tool call args to a dict for downstream state tracking."""
+    args = tool_call.get("args", {})
+    if isinstance(args, dict):
+        return args
+    if isinstance(args, str):
+        try:
+            parsed = json.loads(args)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
 def _select_system_prompt(task_mode: str, collaborative: bool, orchestrator: str) -> str:
     if task_mode == "planning":
         if orchestrator == "model":
@@ -293,6 +307,8 @@ def run_shell_react_agent(
     )
     hci_tools = get_hci_tools(task_mode=task_mode)
     tools = env_tools + hci_tools
+    if collaborative:
+        tools = tools + get_dashboard_tools()
     system_prompt = _select_system_prompt(task_mode, collaborative, "developer")
     agent = create_agent(
         model=llm,
@@ -337,6 +353,8 @@ def run_shell_react_agent(
     current_code_content = None
     current_traj_files = set()
     current_traj_contents = {}
+    current_world_model_description = ""
+    current_plan = ""
 
     final_messages: List[Any] = []
     stream_event_count = 0
@@ -357,12 +375,20 @@ def run_shell_react_agent(
                 # so reading file content here can be stale.
                 if getattr(last_msg, "tool_calls", None):
                     for tool_call in last_msg.tool_calls:
-                        if tool_call.get("name") == "run_command_in_docker":
-                            command = tool_call.get("args", {}).get("command", "")
+                        tool_name = tool_call.get("name")
+                        tool_args = _tool_call_args(tool_call)
+                        if tool_name == "run_command_in_docker":
+                            command = tool_args.get("command", "")
                             match = _CHECK_TRAJ_PATTERN.search(command)
                             if match:
                                 current_code_file = match.group("code").strip("'\"")
                                 print(f"\n[State Update] Validating code file: {current_code_file}")
+                        elif tool_name == "update_world_model_description":
+                            current_world_model_description = str(
+                                tool_args.get("description", "")
+                            )
+                        elif tool_name == "update_plan":
+                            current_plan = str(tool_args.get("plan", ""))
 
                 # Capture new trajectories and content
                 msg_type = getattr(last_msg, "type", "") or last_msg.__class__.__name__
@@ -476,6 +502,8 @@ async def arun_shell_react_agent(
     )
     hci_tools = get_hci_tools(task_mode=task_mode)
     tools = env_tools + hci_tools
+    if collaborative or orchestrator == "model":
+        tools = tools + get_dashboard_tools()
 
     if orchestrator == "model":
         if wait_for_user_input_callback:
@@ -537,10 +565,12 @@ async def arun_shell_react_agent(
     current_code_content = None
     current_traj_files = set()
     current_traj_contents = {}
+    current_world_model_description = ""
+    current_plan = ""
 
     final_messages: List[Any] = []
     stream_event_count = 0
-    
+
     config = {"configurable": {"thread_id": run_id or str(ts)}, "recursion_limit": 1000, "callbacks": [trace_cb]}
     
     input_state = {"messages": [{"role": "user", "content": user_prompt}]}
@@ -566,12 +596,24 @@ async def arun_shell_react_agent(
                     # so reading file content here can be stale.
                     if getattr(last_msg, "tool_calls", None):
                         for tool_call in last_msg.tool_calls:
-                            if tool_call.get("name") == "run_command_in_docker":
-                                command = tool_call.get("args", {}).get("command", "")
+                            tool_name = tool_call.get("name")
+                            tool_args = _tool_call_args(tool_call)
+                            if tool_name == "run_command_in_docker":
+                                command = tool_args.get("command", "")
                                 match = _CHECK_TRAJ_PATTERN.search(command)
                                 if match:
                                     current_code_file = match.group("code").strip("'\"")
                                     print(f"\n[State Update] Validating code file: {current_code_file}")
+                            elif tool_name == "update_world_model_description":
+                                new_description = str(tool_args.get("description", ""))
+                                if new_description != current_world_model_description:
+                                    current_world_model_description = new_description
+                                    # state_changed = True
+                            elif tool_name == "update_plan":
+                                new_plan = str(tool_args.get("plan", ""))
+                                if new_plan != current_plan:
+                                    current_plan = new_plan
+                                    # state_changed = True
 
                     # Capture new trajectories and content
                     msg_type = getattr(last_msg, "type", "") or last_msg.__class__.__name__
@@ -615,6 +657,8 @@ async def arun_shell_react_agent(
                         "current_code_content": current_code_content,
                         "current_traj_files": list(current_traj_files),
                         "current_traj_contents": current_traj_contents,
+                        "current_world_model_description": current_world_model_description,
+                        "current_plan": current_plan,
                         "messages": _messages_to_jsonable(final_messages[-5:]), # last 5 messages
                     })
 
@@ -790,4 +834,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

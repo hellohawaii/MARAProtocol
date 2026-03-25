@@ -160,6 +160,14 @@ You have these tools:
   Declare that you are collecting more data to help fix incorrect predictions on specific trajectories.
 - declare_phase_explore_mechanism()
   Declare that your current code already explains observed trajectories and you are exploring for new mechanisms or behaviors.
+- update_world_model_description(description: str)
+  Update the textual description of your current understanding of the environment's
+  world model. The human sees this summary on their dashboard. Call this whenever your
+  understanding changes significantly.
+- update_plan(plan: str)
+  Update the description of what you are planning to do next. The human sees this on
+  their dashboard. Call this before starting a new line of investigation or when your
+  plan changes.
 
 Your mission is to fully understand the environment dynamics together with the
 human.
@@ -179,18 +187,29 @@ Collaboration rules:
   briefly, and continue executing.
 - Keep your progress transparent to the human and align your next actions with
   their intent.
-- Maintain the human's dashboard: the human sees three information channels, all
-  driven by your actions:
-  1. Current code — updated ONLY when you run check_traj_example.py. The code file
+- Maintain the human's dashboard proactively. The human's shared view is driven by
+  your tool usage and includes these channels:
+  1. World model description — updated only when you call
+     update_world_model_description(...). Use it to summarize your current best
+     understanding of the environment's rules, important mechanisms, and any key
+     uncertainty or limitation.
+  2. Current plan — updated only when you call update_plan(...). Use it to state
+     what you are trying next, especially when you switch phases, begin a new line
+     of investigation, or change strategy.
+  3. Current code — updated only when you run check_traj_example.py. The code file
      you pass as the first argument is read and displayed. Code on disk that was
      never checked is invisible to the human.
-  2. Saved trajectories — all trajectories persisted via save_trajectory(). The
+  4. Saved trajectories — all trajectories persisted via save_trajectory(). The
      human can select any saved trajectory and replay it visually.
-  3. Automatic evaluation — the dashboard evaluates the current code against every
+  5. Automatic evaluation — the dashboard evaluates the current code against every
      saved trajectory and shows per-trajectory accuracy and match/mismatch status.
      This updates automatically whenever the code or trajectories change.
+- Whenever your understanding changes significantly, call
+  update_world_model_description(...) so the dashboard reflects your latest model.
+- Whenever your next intended investigation or strategy changes, call update_plan(...)
+  before proceeding so the dashboard stays aligned with your actions.
 - After significant code changes, run check_traj_example.py to publish the updated
-  code to the human — not only for your own validation.
+  code to the human, not only for your own validation.
 - Save trajectories that demonstrate important behaviors, edge cases, or failure
   modes the human should know about. Use descriptive names.
 - The saved trajectories plus their evaluation results are the primary way the human
@@ -340,6 +359,14 @@ You have these tools:
 - finish_task()
   Signal that you have completed your work and are ready to stop. You MUST call
   this tool to terminate — simply stopping tool calls will not end the session.
+- update_world_model_description(description: str)
+  Update the textual description of your current understanding of the environment's
+  world model. The human sees this summary on their dashboard. Call this whenever your
+  understanding changes significantly.
+- update_plan(plan: str)
+  Update the description of what you are planning to do next. The human sees this on
+  their dashboard. Call this before starting a new line of investigation or when your
+  plan changes.
 
 Your mission is to fully understand the environment dynamics, with the human
 available as a resource when you choose to engage them.
@@ -361,18 +388,29 @@ Collaboration rules:
 - Do NOT call ask_human for trivial questions. Make meaningful progress between asks.
 - When the human responds, integrate their input and continue executing.
 - If the human's response is unclear, make the most reasonable assumption and continue.
-- Maintain the human's dashboard: the human sees three information channels, all
-  driven by your actions:
-  1. Current code — updated ONLY when you run check_traj_example.py. The code file
+- Maintain the human's dashboard proactively. The human's shared view is driven by
+  your tool usage and includes these channels:
+  1. World model description — updated only when you call
+     update_world_model_description(...). Use it to summarize your current best
+     understanding of the environment's rules, important mechanisms, and any key
+     uncertainty or limitation.
+  2. Current plan — updated only when you call update_plan(...). Use it to state
+     what you are trying next, especially when you switch phases or change
+     investigation strategy.
+  3. Current code — updated only when you run check_traj_example.py. The code file
      you pass as the first argument is read and displayed. Code on disk that was
      never checked is invisible to the human.
-  2. Saved trajectories — all trajectories persisted via save_trajectory(). The
+  4. Saved trajectories — all trajectories persisted via save_trajectory(). The
      human can select any saved trajectory and replay it visually.
-  3. Automatic evaluation — the dashboard evaluates the current code against every
+  5. Automatic evaluation — the dashboard evaluates the current code against every
      saved trajectory and shows per-trajectory accuracy and match/mismatch status.
      This updates automatically whenever the code or trajectories change.
+- Whenever your understanding changes significantly, call
+  update_world_model_description(...) so the human sees your latest world model.
+- Whenever your next intended investigation or strategy changes, call update_plan(...)
+  before proceeding so the human can track your direction of travel.
 - After significant code changes, run check_traj_example.py to publish the updated
-  code to the human — not only for your own validation.
+  code to the human, not only for your own validation.
 - Save trajectories that demonstrate important behaviors, edge cases, or failure
   modes the human should know about. Use descriptive names.
 - The saved trajectories plus their evaluation results are the primary way the human
@@ -699,6 +737,14 @@ You have these tools:
   Declare that you are collecting more data to help fix incorrect predictions on specific trajectories.
 - declare_phase_explore_mechanism()
   Declare that your current code already explains observed trajectories and you are exploring for new mechanisms or behaviors.
+- update_world_model_description(description: str)
+  Update the textual description of your current understanding of the environment's
+  world model. The human sees this summary on their dashboard. Call this whenever your
+  understanding changes significantly.
+- update_plan(plan: str)
+  Update the description of what you are planning to do next. The human sees this on
+  their dashboard. Call this before starting a new line of investigation or when your
+  plan changes.
 
 Your mission is to reach the goal state described in the user message,
 together with the human.
@@ -726,18 +772,29 @@ Collaboration rules:
   briefly, and continue executing.
 - Keep your progress transparent to the human and align your next actions with
   their intent.
-- Maintain the human's dashboard: the human sees three information channels, all
-  driven by your actions:
-  1. Current code — updated ONLY when you run check_traj_example.py. The code file
+- Maintain the human's dashboard proactively. The human's shared view is driven by
+  your tool usage and includes these channels:
+  1. World model description — updated only when you call
+     update_world_model_description(...). Use it to summarize your current best
+     understanding of the environment's rules, planning-relevant mechanisms, and
+     any important uncertainty.
+  2. Current plan — updated only when you call update_plan(...). Use it to state
+     what you are trying next, especially when you switch phases, begin a new
+     investigation, or change your trial strategy.
+  3. Current code — updated only when you run check_traj_example.py. The code file
      you pass as the first argument is read and displayed. Code on disk that was
      never checked is invisible to the human.
-  2. Saved trajectories — all trajectories persisted via save_trajectory(). The
+  4. Saved trajectories — all trajectories persisted via save_trajectory(). The
      human can select any saved trajectory and replay it visually.
-  3. Automatic evaluation — the dashboard evaluates the current code against every
+  5. Automatic evaluation — the dashboard evaluates the current code against every
      saved trajectory and shows per-trajectory accuracy and match/mismatch status.
      This updates automatically whenever the code or trajectories change.
+- Whenever your understanding changes significantly, call
+  update_world_model_description(...) so the dashboard reflects your latest model.
+- Whenever your intended next investigation, trial plan, or strategy changes, call
+  update_plan(...) before proceeding.
 - After significant code changes, run check_traj_example.py to publish the updated
-  code to the human — not only for your own validation.
+  code to the human, not only for your own validation.
 - Save trajectories that demonstrate important behaviors, edge cases, or failure
   modes the human should know about. Use descriptive names.
 - The saved trajectories plus their evaluation results are the primary way the human
@@ -909,6 +966,14 @@ You have these tools:
 - finish_task()
   Signal that you have completed your work and are ready to stop. You MUST call
   this tool to terminate — simply stopping tool calls will not end the session.
+- update_world_model_description(description: str)
+  Update the textual description of your current understanding of the environment's
+  world model. The human sees this summary on their dashboard. Call this whenever your
+  understanding changes significantly.
+- update_plan(plan: str)
+  Update the description of what you are planning to do next. The human sees this on
+  their dashboard. Call this before starting a new line of investigation or when your
+  plan changes.
 
 Your mission is to reach the goal state described in the user message,
 with the human available as a resource when you choose to engage them.
@@ -926,18 +991,31 @@ Collaboration rules:
 - You have full autonomy over your workflow.
 - Use ask_human strategically when stuck, uncertain, or want confirmation.
 - Do NOT call ask_human for trivial questions. Make meaningful progress between asks.
-- Maintain the human's dashboard: the human sees three information channels, all
-  driven by your actions:
-  1. Current code — updated ONLY when you run check_traj_example.py. The code file
+- When the human responds, integrate their input and continue executing.
+- If the human's response is unclear, make the most reasonable assumption and continue.
+- Maintain the human's dashboard proactively. The human's shared view is driven by
+  your tool usage and includes these channels:
+  1. World model description — updated only when you call
+     update_world_model_description(...). Use it to summarize your current best
+     understanding of the environment's rules, planning-relevant mechanisms, and
+     any important uncertainty.
+  2. Current plan — updated only when you call update_plan(...). Use it to state
+     what you are trying next, especially when you switch phases or change trial
+     strategy.
+  3. Current code — updated only when you run check_traj_example.py. The code file
      you pass as the first argument is read and displayed. Code on disk that was
      never checked is invisible to the human.
-  2. Saved trajectories — all trajectories persisted via save_trajectory(). The
+  4. Saved trajectories — all trajectories persisted via save_trajectory(). The
      human can select any saved trajectory and replay it visually.
-  3. Automatic evaluation — the dashboard evaluates the current code against every
+  5. Automatic evaluation — the dashboard evaluates the current code against every
      saved trajectory and shows per-trajectory accuracy and match/mismatch status.
      This updates automatically whenever the code or trajectories change.
+- Whenever your understanding changes significantly, call
+  update_world_model_description(...) so the human sees your latest model.
+- Whenever your intended next investigation, trial plan, or strategy changes, call
+  update_plan(...) before proceeding so the human can follow your direction.
 - After significant code changes, run check_traj_example.py to publish the updated
-  code to the human — not only for your own validation.
+  code to the human, not only for your own validation.
 - Save trajectories that demonstrate important behaviors, edge cases, or failure
   modes the human should know about. Use descriptive names.
 - The saved trajectories plus their evaluation results are the primary way the human
@@ -1157,4 +1235,3 @@ def build_initial_user_prompt(
         "declare your current phase when you start work or switch phases. Make "
         "your own decisions about when to stop."
     )
-

@@ -171,4 +171,45 @@ def get_ask_human_tool(
     )
 
 
-__all__ = ["get_hci_tools", "get_ask_human_tool", "get_finish_tool", "FINISH_TOOL_NAME"]
+def get_dashboard_tools():
+    """Create tools for updating the human-visible dashboard panels."""
+    try:
+        from langchain_core.tools import StructuredTool
+    except ImportError as exc:
+        raise ImportError(
+            "langchain_core is required to build tools. Install langchain-core first."
+        ) from exc
+
+    def update_world_model_description(description: str) -> str:
+        message = f"[update_world_model_description] {description}"
+        print(message)
+        return ""
+
+    def update_plan(plan: str) -> str:
+        message = f"[update_plan] {plan}"
+        print(message)
+        return ""
+
+    return [
+        StructuredTool.from_function(
+            func=update_world_model_description,
+            name="update_world_model_description",
+            description=(
+                "Update the textual description of your current understanding of the "
+                "environment's world model. The human sees this summary on their "
+                "dashboard. Call this whenever your understanding changes significantly."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=update_plan,
+            name="update_plan",
+            description=(
+                "Update the description of what you are planning to do next. The human "
+                "sees this on their dashboard. Call this before starting a new line of "
+                "investigation or when your plan changes."
+            ),
+        ),
+    ]
+
+
+__all__ = ["get_hci_tools", "get_ask_human_tool", "get_finish_tool", "get_dashboard_tools", "FINISH_TOOL_NAME"]
