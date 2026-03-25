@@ -33,6 +33,16 @@ MODEL_PRICING = {
             {"up_to_tokens": float("inf"), "input": 4.00, "output": 18.00},
         ]
     },
+    "anthropic/claude-opus-4.6": {
+        "tiers": [
+            {"up_to_tokens": float("inf"), "input": 5.00, "output": 25.00},
+        ]
+    },
+    "openai/gpt-5.4": {
+        "tiers": [
+            {"up_to_tokens": float("inf"), "input": 2.50, "output": 15.00},
+        ]
+    },
     "default": {
         "tiers": [
             {"up_to_tokens": float("inf"), "input": 1.00, "output": 3.00}
