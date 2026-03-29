@@ -168,6 +168,10 @@ You have these tools:
   Update the description of what you are planning to do next. The human sees this on
   their dashboard. Call this before starting a new line of investigation or when your
   plan changes.
+- finish_task()
+  Signal that you believe your work is complete and request approval from the
+  human to stop. In human-collaboration mode, this is a stopping request rather
+  than an immediate unilateral termination.
 
 Your mission is to fully understand the environment dynamics together with the
 human.
@@ -335,6 +339,9 @@ Work style (If no instructions from the user, follow these rules):
 - Avoid overfitting to a single trajectory. If you encounter a trajectory that your code cannot explain, a suitable strategy is to try to find or generate similar scenarios to understand the underlying rule, rather than hardcoding for that specific case.
 - DO NOT stop prematurely just because your current model perfectly explains the currently collected trajectories. You must actively explore the environment to discover new situations and edge cases.
 - Stop only when you are confident that your collected trajectories have fully explored all possible scenarios in the environment and your model can explain all of them.
+- When you believe you are finished, call finish_task() to send a stopping request
+  to the human and wait for approval or further instructions. Do not treat it as
+  an immediate autonomous termination.
 """
 
 
@@ -745,6 +752,10 @@ You have these tools:
   Update the description of what you are planning to do next. The human sees this on
   their dashboard. Call this before starting a new line of investigation or when your
   plan changes.
+- finish_task()
+  Signal that you believe your work is complete and request approval from the
+  human to stop. In human-collaboration mode, this is a stopping request rather
+  than an immediate unilateral termination.
 
 Your mission is to reach the goal state described in the user message,
 together with the human.
@@ -1198,7 +1209,9 @@ def build_initial_user_prompt(
                 "run_command_in_docker to interact with the environment and reach "
                 "the goal state. Use the phase declaration tools to declare your "
                 "current phase when you start or switch phases. When I give "
-                "suggestions or requests, cooperate and follow my guidance."
+                "suggestions or requests, cooperate and follow my guidance. "
+                "When you believe you are finished, call finish_task to request "
+                "my approval to stop."
                 + goal_block
             )
         return (
@@ -1226,7 +1239,8 @@ def build_initial_user_prompt(
             "model, and validate it with check_traj_example.py. Use the phase "
             "declaration tools to explicitly declare your current phase when you "
             "start work or switch phases. When I give suggestions, questions, or "
-            "requests, cooperate and follow my guidance."
+            "requests, cooperate and follow my guidance. When you believe you are "
+            "finished, call finish_task to request my approval to stop."
         )
     return (
         "Start now. Use run_command_in_docker to explore, save trajectories, "

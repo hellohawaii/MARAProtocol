@@ -514,6 +514,9 @@ async def arun_shell_react_agent(
             tools = tools + [ask_human_tool]
         finish_tool = get_finish_tool()
         tools = tools + [finish_tool]
+    elif orchestrator == "user":
+        finish_tool = get_finish_tool()
+        tools = tools + [finish_tool]
 
     system_prompt = _select_system_prompt(task_mode, collaborative, orchestrator)
 
@@ -578,6 +581,22 @@ async def arun_shell_react_agent(
     config = {"configurable": {"thread_id": run_id or str(ts)}, "recursion_limit": 1000, "callbacks": [trace_cb]}
     
     input_state = {"messages": [{"role": "user", "content": user_prompt}]}
+
+    async def _wait_for_human_approval_to_end(paused_state: str) -> Optional[str]:
+        if pause_gate and notify_paused_callback:
+            await notify_paused_callback(paused_state)
+            pause_gate.clear()
+            await pause_gate.wait()
+            if input_queue:
+                try:
+                    return input_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return None
+            return None
+        if wait_for_user_input_callback:
+            user_input = await _wait_for_user_input(terminal_waiting_message)
+            return user_input if user_input and user_input.strip() else None
+        return None
     
     while True:
         state_changed = False
@@ -677,27 +696,11 @@ async def arun_shell_react_agent(
         if not state.next:
             # Agent finished (terminal AI message without tool calls, or turn limit)
             if _is_terminal_ai_without_tool_calls(final_messages):
-                if orchestrator == "model":
-                    # Model stopped without finish_task — force continuation.
+                if orchestrator in ("model", "user"):
+                    # Model/user stopped without finish_task — force continuation.
                     await agent.aupdate_state(config, {"messages": []}, as_node="tools")
                     input_state = None
                     continue
-                elif orchestrator == "user" and pause_gate and notify_paused_callback:
-                    # In user mode: always use the pause mechanism for terminal
-                    # so the frontend gets paused_terminal state and enables input.
-                    await notify_paused_callback("paused_terminal")
-                    pause_gate.clear()
-                    await pause_gate.wait()
-                    human_msg = None
-                    if input_queue:
-                        try:
-                            human_msg = input_queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            pass
-                    if human_msg and human_msg.strip():
-                        input_state = {"messages": [HumanMessage(content=human_msg)]}
-                        continue
-                    break
                 else:
                     # developer mode (or user mode without pause_gate): ask for input
                     if wait_for_user_input_callback:
@@ -715,6 +718,15 @@ async def arun_shell_react_agent(
             input_state = None
             continue  # resume react loop
         elif orchestrator == "user":
+            if _last_tool_messages_contain(final_messages, FINISH_TOOL_NAME):
+                human_msg = await _wait_for_human_approval_to_end("paused")
+                if human_msg and human_msg.strip():
+                    await agent.aupdate_state(
+                        config, {"messages": [HumanMessage(content=human_msg)]}
+                    )
+                    input_state = None
+                    continue
+                break
             if pause_gate and not pause_gate.is_set():
                 if notify_paused_callback:
                     await notify_paused_callback("paused")
@@ -726,7 +738,9 @@ async def arun_shell_react_agent(
                     except asyncio.QueueEmpty:
                         pass
                 if human_msg and human_msg.strip():
-                    await agent.aupdate_state(config, {"messages": [HumanMessage(content=human_msg)]})
+                    await agent.aupdate_state(
+                        config, {"messages": [HumanMessage(content=human_msg)]}
+                    )
             input_state = None
             continue
         else:
