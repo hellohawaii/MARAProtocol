@@ -32,6 +32,7 @@ from langchain_utils import get_llm  # noqa: E402
 
 from env_wrapper import (  # noqa: E402
     get_env_tools,
+    get_env_tools_for_runtime,
     get_or_create_runtime_info,
 )
 from hci_tools import get_ask_human_tool, get_dashboard_tools, get_finish_tool, get_hci_tools, FINISH_TOOL_NAME  # noqa: E402
@@ -43,7 +44,9 @@ from shell_react_prompt import (  # noqa: E402
     SHELL_REACT_PLANNING_MODEL_ORCHESTRATED_SYSTEM_PROMPT,
     SHELL_REACT_PLANNING_SYSTEM_PROMPT,
     SHELL_REACT_SYSTEM_PROMPT,
+    SHELL_REACT_VARIANT_BATCH_EVAL_SYSTEM_PROMPT,
     build_initial_user_prompt,
+    build_variant_batch_eval_user_prompt,
 )
 
 DEFAULT_DOCKERFILE_PATH = str((_FILE_DIR / "Dockerfile.tool").resolve())
@@ -52,11 +55,11 @@ _EXAMPLE_BENCHMARK_DIR = (_AUTUMNBENCH_DIR / "example_benchmark").resolve()
 
 from planning_utils import (  # noqa: E402
     load_color_dict,
-    load_planning_data,
     goal_to_color_grid,
     color_grid_to_scene_graph,
     mask_to_positions,
 )
+from variant_env_utils import load_goal_and_mask  # noqa: E402
 
 
 def _load_planning_goal(env_name: str):
@@ -65,12 +68,12 @@ def _load_planning_goal(env_name: str):
     Returns (goal_scene_graph_json, mask_scene_graph_json) as JSON strings,
     or (None, None) if no planning data exists.
     """
-    result = load_planning_data(_EXAMPLE_BENCHMARK_DIR, env_name)
+    data_dir, result = load_goal_and_mask(_EXAMPLE_BENCHMARK_DIR, env_name)
     if result is None:
         return None, None
 
     raw_goal, raw_mask = result
-    color_dict = load_color_dict(_EXAMPLE_BENCHMARK_DIR)
+    color_dict = load_color_dict(data_dir)
     goal_color = goal_to_color_grid(raw_goal, color_dict)
     goal_sg = color_grid_to_scene_graph(goal_color)
 
@@ -272,6 +275,98 @@ def _select_system_prompt(task_mode: str, collaborative: bool, orchestrator: str
     if collaborative:
         return SHELL_REACT_HUMAN_COLLAB_SYSTEM_PROMPT
     return SHELL_REACT_SYSTEM_PROMPT
+
+
+async def arun_variant_batch_eval_agent(
+    env_name: str,
+    *,
+    user_instruction: str,
+    initial_state: Dict[str, Any],
+    runtime,
+    llm_model: str = "openai/gpt-5.4",
+    max_turns: int = 120,
+    timeout_seconds: int = 30,
+) -> Dict[str, Any]:
+    llm = get_llm(model=llm_model)
+    runtime.configure_environment(env_name=env_name, task_mode="planning")
+    runtime.install_batch_eval_env_client()
+    runtime.set_client_control_mode("restricted")
+    env_tools = get_env_tools_for_runtime(runtime, timeout_seconds=timeout_seconds)
+
+    agent = create_agent(
+        model=llm,
+        tools=env_tools,
+        system_prompt=SHELL_REACT_VARIANT_BATCH_EVAL_SYSTEM_PROMPT,
+        middleware=[
+            ModelCallLimitMiddleware(
+                run_limit=max_turns,
+                exit_behavior="end",
+            )
+        ],
+    )
+
+    goal_sg, mask_sg = _load_planning_goal(env_name)
+    user_prompt = build_variant_batch_eval_user_prompt(
+        env_name=env_name,
+        user_instruction=user_instruction,
+        initial_state=json.dumps(initial_state, indent=2),
+        goal_scene_graph=goal_sg or "null",
+        mask_scene_graph=mask_sg or "null",
+    )
+
+    transcript_path = (
+        _FILE_DIR / "logs" / runtime.run_id / f"variant_batch_eval_{env_name}_transcript.json"
+    ).resolve()
+    detail_log_dir = transcript_path.with_suffix("") / "details"
+    trace_cb = _JsonTraceCallback(detail_log_dir)
+
+    final_messages: List[Any] = []
+    stream_event_count = 0
+    async for event in agent.astream(
+        {"messages": [{"role": "user", "content": user_prompt}]},
+        config={"recursion_limit": 1000, "callbacks": [trace_cb]},
+        stream_mode="values",
+    ):
+        stream_event_count += 1
+        if isinstance(event, dict) and "messages" in event:
+            final_messages = event.get("messages", []) or final_messages
+            _write_json(
+                detail_log_dir / "stream_events" / f"{stream_event_count:04d}.json",
+                {
+                    "stream_event_idx": stream_event_count,
+                    "num_messages": len(final_messages),
+                    "last_message": (
+                        _message_to_jsonable(final_messages[-1]) if final_messages else None
+                    ),
+                    "messages": _messages_to_jsonable(final_messages),
+                },
+            )
+
+    final_response = ""
+    if final_messages:
+        final_response = _message_content_to_text(getattr(final_messages[-1], "content", ""))
+
+    result: Dict[str, Any] = {
+        "ok": True,
+        "env_name": env_name,
+        "llm_model": llm_model,
+        "max_turns": max_turns,
+        "timeout_seconds": timeout_seconds,
+        "num_messages": len(final_messages),
+        "final_response": final_response,
+        "runtime_info": runtime.get_runtime_info(),
+        "stream_event_count": stream_event_count,
+    }
+
+    payload = {
+        **result,
+        "messages": _messages_to_jsonable(final_messages),
+    }
+    _write_json(transcript_path, payload)
+    result["transcript_path"] = str(transcript_path)
+    result["detail_log_dir"] = str(detail_log_dir)
+
+    return result
 
 
 def run_shell_react_agent(

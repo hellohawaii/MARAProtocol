@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 
@@ -17,6 +17,10 @@ PY_EXAMPLES_DIR = AUTUMNBENCH_DIR.parent
 MARA_ROOT = AUTUMNBENCH_DIR.parent.parent
 DEFAULT_WORKSPACE_DIR = (SCRIPT_DIR / "llm_workspace").resolve()
 RUNS_WORKSPACE_ROOT_DIR = (SCRIPT_DIR / "llm_workspace_runs").resolve()
+INTERNAL_CONTROL_TOKEN = os.environ.get(
+    "AUTUMNBENCH_INTERNAL_CONTROL_TOKEN",
+    "autumnbench-internal-control-static-token",
+)
 
 for path in (str(MARA_ROOT), str(PY_EXAMPLES_DIR), str(AUTUMNBENCH_DIR)):
     if path not in sys.path:
@@ -27,21 +31,21 @@ try:
     from .traj_visualization_utils import save_trajectory_visualization
     from .planning_utils import (
         load_color_dict,
-        load_planning_data,
         goal_to_color_grid,
         scene_graph_to_color_grid,
         check_grid_same,
     )
+    from .variant_env_utils import load_goal_and_mask, load_program_text
 except ImportError:  # pragma: no cover
     from log_utils import ensure_logs_root_dir
     from traj_visualization_utils import save_trajectory_visualization
     from planning_utils import (
         load_color_dict,
-        load_planning_data,
         goal_to_color_grid,
         scene_graph_to_color_grid,
         check_grid_same,
     )
+    from variant_env_utils import load_goal_and_mask, load_program_text
 
 autumnstdlib = importlib.import_module("autumnbench.autumnstdlib").autumnstdlib
 Interpreter = importlib.import_module("interpreter_module").Interpreter
@@ -91,6 +95,10 @@ class SetTaskModeRequest(BaseModel):
     task_mode: str = Field(..., description="Task mode: 'explore' or 'planning'")
 
 
+class SetClientControlModeRequest(BaseModel):
+    mode: str = Field(..., description="Client control mode: 'full' or 'restricted'")
+
+
 class EnvSession:
     def __init__(self) -> None:
         self._lock = Lock()
@@ -106,6 +114,7 @@ class EnvSession:
         self.actions: List[str] = []
         self.transitions: List[Dict[str, Any]] = []
         self.task_mode: str = "explore"
+        self.client_control_mode: str = "full"
         self._goal_grid: Optional[List[List[str]]] = None
         self._goal_mask: Optional[List[List[int]]] = None
         self._color_dict: Optional[Dict[int, str]] = None
@@ -153,19 +162,26 @@ class EnvSession:
                 if not self.configured_env_name:
                     raise RuntimeError("Environment name must be set before setting task_mode to 'planning'.")
                 data_dir = (AUTUMNBENCH_DIR / "example_benchmark").resolve()
-                result = load_planning_data(data_dir, self.configured_env_name)
+                goal_data_dir, result = load_goal_and_mask(data_dir, self.configured_env_name)
                 if result is None:
                     raise FileNotFoundError(
                         f"Planning data not found for env '{self.configured_env_name}'"
                     )
                 raw_goal, raw_mask = result
-                self._color_dict = load_color_dict(data_dir)
+                self._color_dict = load_color_dict(goal_data_dir)
                 self._goal_grid = goal_to_color_grid(raw_goal, self._color_dict)
                 self._goal_mask = raw_mask
             else:
                 self._goal_grid = None
                 self._goal_mask = None
             return {"ok": True, "task_mode": self.task_mode}
+
+    def set_client_control_mode(self, mode: str) -> Dict[str, Any]:
+        with self._lock:
+            if mode not in ("full", "restricted"):
+                raise ValueError(f"Invalid client_control_mode: {mode}")
+            self.client_control_mode = mode
+            return {"ok": True, "client_control_mode": self.client_control_mode}
 
     def _check_goal_reached(self) -> bool:
         if self._goal_grid is None or self._goal_mask is None or self.interpreter is None:
@@ -176,10 +192,14 @@ class EnvSession:
         return check_grid_same(current_grid, self._goal_grid, self._goal_mask)
 
     def _load_program(self, env_name: str, data_dir: Path) -> str:
-        program_path = data_dir / "programs" / f"{env_name}.sexp"
-        if not program_path.is_file():
-            raise FileNotFoundError(f"Program not found: {program_path}")
-        return program_path.read_text(encoding="utf-8")
+        _resolved_data_dir, program_text = load_program_text(data_dir, env_name)
+        return program_text
+
+    def _client_reset_allowed(self) -> bool:
+        return self.client_control_mode == "full"
+
+    def _client_save_allowed(self) -> bool:
+        return self.client_control_mode == "full"
 
     def _render_state(self) -> Dict[str, Any]:
         if self.interpreter is None:
@@ -226,7 +246,7 @@ class EnvSession:
             if not env_name:
                 raise RuntimeError("Environment not configured. Internal setup must call /_set_env_name first.")
             resolved_data_dir = (AUTUMNBENCH_DIR / "example_benchmark").resolve()
-            program = self._load_program(env_name, resolved_data_dir)
+            runtime_data_dir, program = load_program_text(resolved_data_dir, env_name)
             seed = 0
 
             interpreter = Interpreter()
@@ -234,16 +254,19 @@ class EnvSession:
 
             self.interpreter = interpreter
             self.env_name = env_name
-            self.data_dir = resolved_data_dir
+            self.data_dir = runtime_data_dir
             self.seed = seed
             
             obfuscated = os.getenv("OBFUSCATED", "0") == "1"
-            self._obfuscation_mapping = _load_obfuscation_mapping(resolved_data_dir) if obfuscated else None
+            self._obfuscation_mapping = _load_obfuscation_mapping(runtime_data_dir) if obfuscated else None
             self.current_state = self._render_state()
             self.actions = []
             self.transitions = []
 
             return self.current_state
+
+    def backend_reset(self) -> Dict[str, Any]:
+        return self.reset()
 
     def step(self, action: str) -> Dict[str, Any]:
         with self._lock:
@@ -314,9 +337,21 @@ class EnvSession:
                 pass
             return {"success": True, "saved_path": f"traj/{safe_name}"}
 
+    def backend_save_trajectory(self, filename: Optional[str]) -> Dict[str, Any]:
+        return self.save_trajectory(filename)
+
+    def backend_goal_status(self) -> Dict[str, Any]:
+        with self._lock:
+            return {"goal_reached": self._check_goal_reached()}
+
 
 app = FastAPI(title="AutumnBench Environment API", version="1.0.0")
 session = EnvSession()
+
+
+def _verify_internal_token(value: Optional[str]) -> None:
+    if value != INTERNAL_CONTROL_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid internal control token")
 
 
 @app.get("/health")
@@ -326,6 +361,7 @@ def health() -> Dict[str, Any]:
         "ok": True,
         "workspace_dir": str(session.workspace_dir),
         "run_id": session.current_run_id,
+        "internal_control_token_available": True,
     }
 
 
@@ -353,8 +389,22 @@ def set_task_mode(payload: SetTaskModeRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/_set_client_control_mode")
+def set_client_control_mode(
+    payload: SetClientControlModeRequest,
+    x_autumnbench_internal_token: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    _verify_internal_token(x_autumnbench_internal_token)
+    try:
+        return session.set_client_control_mode(payload.mode)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/reset")
 def reset_env(payload: ResetRequest) -> Dict[str, Any]:
+    if not session._client_reset_allowed():
+        raise HTTPException(status_code=403, detail="Client reset is disabled in restricted mode.")
     try:
         return session.reset()
     except Exception as exc:
@@ -373,8 +423,45 @@ def step_env(payload: StepRequest) -> Dict[str, Any]:
 
 @app.post("/save_trajectory")
 def save_trajectory(payload: SaveTrajectoryRequest) -> Dict[str, Any]:
+    if not session._client_save_allowed():
+        raise HTTPException(status_code=403, detail="Client trajectory saving is disabled in restricted mode.")
     try:
         return session.save_trajectory(payload.filename)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/_backend_reset")
+def backend_reset(
+    payload: ResetRequest,
+    x_autumnbench_internal_token: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    _verify_internal_token(x_autumnbench_internal_token)
+    try:
+        return session.backend_reset()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/_backend_save_trajectory")
+def backend_save_trajectory(
+    payload: SaveTrajectoryRequest,
+    x_autumnbench_internal_token: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    _verify_internal_token(x_autumnbench_internal_token)
+    try:
+        return session.backend_save_trajectory(payload.filename)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/_backend_goal_status")
+def backend_goal_status(
+    x_autumnbench_internal_token: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    _verify_internal_token(x_autumnbench_internal_token)
+    try:
+        return session.backend_goal_status()
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

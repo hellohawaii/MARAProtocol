@@ -9,7 +9,7 @@ import traceback
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
@@ -37,9 +37,59 @@ RUNS_WORKSPACE_ROOT_DIR = (BASE_DIR / "llm_workspace_runs").resolve()
 WORKSPACE_DIR = TEMPLATE_WORKSPACE_DIR
 TRAJ_DIR = TEMPLATE_WORKSPACE_DIR / "traj"
 DEFAULT_DOCKER_IMAGE = "python:3.11-slim"
+INTERNAL_CONTROL_TOKEN = os.environ.get(
+	"AUTUMNBENCH_INTERNAL_CONTROL_TOKEN",
+	"autumnbench-internal-control-static-token",
+)
 _RUNTIME_LOCK = threading.Lock()
 _RUNTIME_SESSION: Optional["_DockerRuntime"] = None
 _RUNTIME_KEY: Optional[tuple] = None
+_BATCH_EVAL_ENV_CLIENT_TEMPLATE = """import os
+import json
+from typing import Any, Dict, Optional
+from urllib import request, error
+
+
+class RemoteEnvWrapper:
+    def __init__(self, base_url: Optional[str] = None, timeout_seconds: int = 30):
+        self.base_url = (base_url or os.getenv("ENV_API_BASE_URL") or "http://host.docker.internal:8002").rstrip("/")
+        self.timeout_seconds = timeout_seconds
+
+    def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        url = f"{self.base_url}{path}"
+        body = json.dumps(payload).encode("utf-8")
+        req = request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with request.urlopen(req, timeout=self.timeout_seconds) as resp:
+                resp_body = resp.read().decode("utf-8")
+        except error.HTTPError as exc:
+            message = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"HTTP {exc.code} calling {url}: {message}") from exc
+        except error.URLError as exc:
+            raise RuntimeError(f"Failed to call {url}: {exc}") from exc
+
+        try:
+            return json.loads(resp_body)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Invalid JSON response from {url}: {resp_body}") from exc
+
+    def reset(self) -> Dict[str, Any]:
+        raise RuntimeError("reset() is disabled in variant batch evaluator mode. The backend already prepared the environment.")
+
+    def step(self, action: str):
+        result = self._post("/step", {"action": action})
+        if isinstance(result, dict) and "goal_reached" in result:
+            return result["state"], result["goal_reached"]
+        return result
+
+    def save_trajectory(self, filename: Optional[str] = None) -> Dict[str, Any]:
+        raise RuntimeError("save_trajectory() is disabled in variant batch evaluator mode. The backend saves trajectories after the agent finishes.")
+"""
 
 
 def ensure_workspace_dirs() -> None:
@@ -140,17 +190,24 @@ class _DockerRuntime:
 		shutil.copytree(TEMPLATE_WORKSPACE_DIR, self.active_workspace_dir, dirs_exist_ok=False)
 		(self.active_workspace_dir / "traj").mkdir(parents=True, exist_ok=True)
 
-	def _set_env_api_workspace(self) -> None:
-		url = "http://127.0.0.1:8002/set_workspace"
-		payload = {
-			"workspace_dir": str(self.active_workspace_dir),
-			"run_id": self.run_id,
-		}
+	def _post_env_api(
+		self,
+		path: str,
+		payload: Optional[Dict[str, Any]] = None,
+		*,
+		internal: bool = False,
+		expect_ok: bool = True,
+	) -> Dict[str, Any]:
+		url = f"http://127.0.0.1:8002{path}"
+		payload = payload or {}
 		body = json.dumps(payload).encode("utf-8")
+		headers = {"Content-Type": "application/json"}
+		if internal:
+			headers["X-Autumnbench-Internal-Token"] = INTERNAL_CONTROL_TOKEN
 		req = urlrequest.Request(
 			url,
 			data=body,
-			headers={"Content-Type": "application/json"},
+			headers=headers,
 			method="POST",
 		)
 		try:
@@ -165,66 +222,48 @@ class _DockerRuntime:
 		try:
 			parsed = json.loads(raw)
 		except json.JSONDecodeError as exc:
-			raise ValueError(f"Invalid /set_workspace response: {raw}") from exc
+			raise ValueError(f"Invalid {path} response: {raw}") from exc
 
-		if not parsed.get("ok"):
-			raise ValueError(f"Env API rejected workspace switch: {parsed}")
+		if expect_ok and not parsed.get("ok"):
+			raise ValueError(f"Env API rejected {path}: {parsed}")
+		return parsed
+
+	def _get_env_api(self, path: str, *, internal: bool = False) -> Dict[str, Any]:
+		url = f"http://127.0.0.1:8002{path}"
+		headers = {}
+		if internal:
+			headers["X-Autumnbench-Internal-Token"] = INTERNAL_CONTROL_TOKEN
+		req = urlrequest.Request(url, headers=headers, method="GET")
+		try:
+			with urlrequest.urlopen(req, timeout=10) as resp:
+				raw = resp.read().decode("utf-8")
+		except urlerror.HTTPError as exc:
+			msg = exc.read().decode("utf-8", errors="replace")
+			raise ValueError(f"Failed calling {path} (HTTP {exc.code}): {msg}") from exc
+		except urlerror.URLError as exc:
+			raise ValueError(f"Failed to reach env API at {url}: {exc}") from exc
+
+		try:
+			return json.loads(raw)
+		except json.JSONDecodeError as exc:
+			raise ValueError(f"Invalid {path} response: {raw}") from exc
+
+	def _set_env_api_workspace(self) -> None:
+		self._post_env_api(
+			"/set_workspace",
+			{
+				"workspace_dir": str(self.active_workspace_dir),
+				"run_id": self.run_id,
+			},
+		)
 
 	def _set_env_api_env_name(self) -> None:
 		if not self.env_name:
 			return
-		url = "http://127.0.0.1:8002/_set_env_name"
-		payload = {"env_name": self.env_name}
-		body = json.dumps(payload).encode("utf-8")
-		req = urlrequest.Request(
-			url,
-			data=body,
-			headers={"Content-Type": "application/json"},
-			method="POST",
-		)
-		try:
-			with urlrequest.urlopen(req, timeout=10) as resp:
-				raw = resp.read().decode("utf-8")
-		except urlerror.HTTPError as exc:
-			msg = exc.read().decode("utf-8", errors="replace")
-			raise ValueError(f"Failed to set hidden env name (HTTP {exc.code}): {msg}") from exc
-		except urlerror.URLError as exc:
-			raise ValueError(f"Failed to reach env API at {url}: {exc}") from exc
-
-		try:
-			parsed = json.loads(raw)
-		except json.JSONDecodeError as exc:
-			raise ValueError(f"Invalid /_set_env_name response: {raw}") from exc
-
-		if not parsed.get("ok"):
-			raise ValueError(f"Env API rejected env_name switch: {parsed}")
+		self._post_env_api("/_set_env_name", {"env_name": self.env_name})
 
 	def _set_env_api_task_mode(self) -> None:
-		url = "http://127.0.0.1:8002/_set_task_mode"
-		payload = {"task_mode": self.task_mode}
-		body = json.dumps(payload).encode("utf-8")
-		req = urlrequest.Request(
-			url,
-			data=body,
-			headers={"Content-Type": "application/json"},
-			method="POST",
-		)
-		try:
-			with urlrequest.urlopen(req, timeout=10) as resp:
-				raw = resp.read().decode("utf-8")
-		except urlerror.HTTPError as exc:
-			msg = exc.read().decode("utf-8", errors="replace")
-			raise ValueError(f"Failed to set task mode (HTTP {exc.code}): {msg}") from exc
-		except urlerror.URLError as exc:
-			raise ValueError(f"Failed to reach env API at {url}: {exc}") from exc
-
-		try:
-			parsed = json.loads(raw)
-		except json.JSONDecodeError as exc:
-			raise ValueError(f"Invalid /_set_task_mode response: {raw}") from exc
-
-		if not parsed.get("ok"):
-			raise ValueError(f"Env API rejected task_mode switch: {parsed}")
+		self._post_env_api("/_set_task_mode", {"task_mode": self.task_mode})
 
 	def _ensure_container_running(self) -> None:
 		if self.container is not None:
@@ -273,9 +312,61 @@ class _DockerRuntime:
 			self.container = self.client.containers.get(self.container_name)
 			self.container.start()
 
-	def exec_command(self, command: str, timeout_seconds: int) -> dict:
+	def ensure_ready(self) -> None:
 		self.ensure_daemon_ready()
 		self._ensure_container_running()
+
+	def configure_environment(
+		self,
+		*,
+		env_name: Optional[str] = None,
+		task_mode: Optional[str] = None,
+	) -> None:
+		if env_name is not None:
+			self.env_name = env_name
+		if task_mode is not None:
+			self.task_mode = task_mode
+		self.ensure_ready()
+		self._set_env_api_workspace()
+		self._set_env_api_env_name()
+		self._set_env_api_task_mode()
+
+	def set_client_control_mode(self, mode: str) -> Dict[str, Any]:
+		self.ensure_ready()
+		return self._post_env_api(
+			"/_set_client_control_mode",
+			{"mode": mode},
+			internal=True,
+		)
+
+	def backend_reset(self) -> Dict[str, Any]:
+		self.ensure_ready()
+		return self._post_env_api("/_backend_reset", {}, internal=True, expect_ok=False)
+
+	def backend_save_trajectory(self, filename: Optional[str] = None) -> Dict[str, Any]:
+		payload: Dict[str, Any] = {}
+		if filename:
+			payload["filename"] = filename
+		self.ensure_ready()
+		return self._post_env_api(
+			"/_backend_save_trajectory",
+			payload,
+			internal=True,
+			expect_ok=False,
+		)
+
+	def backend_goal_status(self) -> Dict[str, Any]:
+		self.ensure_ready()
+		return self._get_env_api("/_backend_goal_status", internal=True)
+
+	def install_batch_eval_env_client(self) -> Path:
+		self._prepare_run_workspace()
+		out_path = self.active_workspace_dir / "env_api_client.py"
+		out_path.write_text(_BATCH_EVAL_ENV_CLIENT_TEMPLATE, encoding="utf-8")
+		return out_path
+
+	def exec_command(self, command: str, timeout_seconds: int) -> dict:
+		self.ensure_ready()
 
 		state = {}
 		done = threading.Event()
@@ -487,6 +578,132 @@ def get_or_create_runtime_info(
 	return runtime.get_runtime_info()
 
 
+def create_pinned_runtime(
+	docker_image: Optional[str] = None,
+	dockerfile_path: Optional[str] = None,
+	docker_build_context: Optional[str] = None,
+	env_api_base_url: str = "http://host.docker.internal:8002",
+	env_name: Optional[str] = None,
+	task_mode: str = "explore",
+) -> _DockerRuntime:
+	ensure_workspace_dirs()
+	runtime = _DockerRuntime(
+		docker_image=docker_image,
+		dockerfile_path=dockerfile_path,
+		docker_build_context=docker_build_context,
+		env_api_base_url=env_api_base_url,
+		env_name=env_name,
+		task_mode=task_mode,
+	)
+	runtime.ensure_ready()
+	return runtime
+
+
+def get_env_tools_for_runtime(
+	runtime: _DockerRuntime,
+	timeout_seconds: int = 15,
+):
+	try:
+		from langchain_core.tools import StructuredTool
+	except ImportError as exc:
+		raise ImportError(
+			"langchain_core is required to build tools. Install langchain-core first."
+		) from exc
+
+	import asyncio
+
+	def _run_command(command: str) -> str:
+		ts_start = time.time()
+		ts_start_iso = datetime.fromtimestamp(ts_start).isoformat()
+		try:
+			result = runtime.exec_command(command=command, timeout_seconds=timeout_seconds)
+			ts_end = time.time()
+			ts_end_iso = datetime.fromtimestamp(ts_end).isoformat()
+
+			logging_errors: List[str] = []
+			record = {
+				"run_id": runtime.run_id,
+				"workspace_dir": str(runtime.active_workspace_dir),
+				"ts_start": ts_start_iso,
+				"ts_end": ts_end_iso,
+				"duration_ms": int((ts_end - ts_start) * 1000),
+				"command": command,
+				"timeout_seconds": timeout_seconds,
+				"timed_out": bool(result.get("timed_out")),
+				"exit_code": result.get("exit_code"),
+				"stdout": result.get("stdout", ""),
+				"stderr": result.get("stderr", ""),
+			}
+			try:
+				append_jsonl(run_logs_dir(runtime.run_id) / "commands.jsonl", record)
+			except Exception as exc:
+				logging_errors.append(f"failed to append commands.jsonl: {exc}")
+
+			try:
+				persist_check_artifacts(
+					command=command,
+					result=result,
+					run_id=runtime.run_id,
+					workspace_dir=runtime.active_workspace_dir,
+					ts_start_iso=ts_start_iso,
+					ts_end_iso=ts_end_iso,
+				)
+			except Exception as exc:
+				logging_errors.append(f"failed to persist check artifacts: {exc}")
+
+			if result["timed_out"]:
+				msg = (
+					f"⏰ Timeout: command exceeded {timeout_seconds} seconds. "
+					"Container remains alive and command may still be running."
+				)
+				if logging_errors:
+					msg += "\n⚠️ Logging warnings:\n" + "\n".join(logging_errors)
+				return msg
+
+			output_parts = []
+			if result["stdout"]:
+				output_parts.append(f"[STDOUT]:\n{result['stdout']}")
+			if result["stderr"]:
+				output_parts.append(f"[STDERR]:\n{result['stderr']}")
+			output = "\n".join(output_parts).strip()
+
+			if result["exit_code"] == 0:
+				msg = f"✅ Command executed successfully.\n{output}" if output else "✅ Command executed successfully."
+				if logging_errors:
+					msg += "\n⚠️ Logging warnings:\n" + "\n".join(logging_errors)
+				return msg
+
+			msg = (
+				f"❌ Command failed (exit code {result['exit_code']}).\n{output}"
+				if output
+				else f"❌ Command failed (exit code {result['exit_code']})."
+			)
+			if logging_errors:
+				msg += "\n⚠️ Logging warnings:\n" + "\n".join(logging_errors)
+			return msg
+		except (DockerException, ValueError) as exc:
+			return f"❌ Docker SDK error: {str(exc)}"
+		except Exception as exc:
+			return f"❌ Internal execution error: {str(exc)}\n{traceback.format_exc()}"
+
+	async def _arun_command(command: str) -> str:
+		return await asyncio.to_thread(_run_command, command)
+
+	run_command_tool = StructuredTool.from_function(
+		func=_run_command,
+		coroutine=_arun_command,
+		name="run_command_in_docker",
+		description=(
+			"Execute one shell command in a persistent Docker workspace at /workspace. "
+			"Use this to run Python scripts, call RemoteEnvWrapper env.step(...), "
+			"write code files, and inspect results. Container state and files persist across calls. "
+			"Input: command."
+		),
+	)
+
+	return [run_command_tool]
+
+
 def get_env_tools(
 	docker_image: Optional[str] = None,
 	timeout_seconds: int = 15,
@@ -541,7 +758,9 @@ __all__: List[str] = [
 	"DEFAULT_DOCKER_IMAGE",
 	"ensure_workspace_dirs",
 	"execute_run_command",
+	"create_pinned_runtime",
 	"get_runtime_info",
 	"get_or_create_runtime_info",
+	"get_env_tools_for_runtime",
 	"get_env_tools",
 ]

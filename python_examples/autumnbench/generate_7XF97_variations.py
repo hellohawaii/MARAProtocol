@@ -177,12 +177,10 @@ def build_goal_and_mask(params: VariationParams) -> Tuple[List[List[int]], List[
             color_int = COLOR_INT["mediumpurple"] if y == 12 else COLOR_INT["green"]
             goal[y][lx] = color_int
 
-    # Mask: cover selected changed leaf columns (full column at target height)
+    # Mask: cover selected changed leaf columns (always full 4-row height, rows 12-15)
     for idx in params.mask_leaf_indices:
         lx = params.leaf_xs[idx]
-        h_target = params.leaf_heights_target[idx]
-        for dy in range(h_target):
-            y = 15 - dy
+        for y in range(12, 16):
             mask[y][lx] = 1
 
     return goal, mask

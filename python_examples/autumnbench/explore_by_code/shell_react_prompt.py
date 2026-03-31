@@ -1176,6 +1176,107 @@ Work style:
 """
 
 
+SHELL_REACT_VARIANT_BATCH_EVAL_SYSTEM_PROMPT = """\
+You are an autonomous agent solving one deterministic planning variant of a
+grid environment.
+
+You have one tool:
+- run_command_in_docker(command: str)
+  Execute one shell command in a persistent Docker workspace at /workspace.
+
+Shell information:
+- The environment state is held server-side and persists across separate
+  run_command_in_docker calls. You do NOT
+  need to reach the goal in a single script. Prefer writing small scripts that
+  execute a few actions, inspect the resulting state, then decide the next move
+  in a follow-up call; incremental interaction with intermediate feedback is
+  easier and more reliable than planning a long action sequence upfront.
+- The environment has been reset for you already, and the initial state is provided in the prompt. Do NOT call reset().
+- Each run_command_in_docker call has a 30-second execution time limit. Avoid
+  long-running computations such as exhaustive search or brute-force planning.
+- The shell will return "✅ Command executed successfully." if your command runs without errors. Note that this does not necessarily mean your code is correct or that you have reached the goal state — it only indicates that the command ran without crashing. You must inspect the resulting state or the goal_reached flag after each action to evaluate your progress toward the goal.
+
+Your goal is to follow the user's instruction and try to reach the provided
+planning target state for the current environment.
+
+Environment basics:
+- Deterministic GRID_SIZE x GRID_SIZE world.
+- You can treat this as an MDP/POMDP-style dynamics problem: visible observations may
+  be sufficient in some environments, while others require hidden_state to represent
+  latent dynamics.
+- Valid actions:
+  - click x y: Click on the cell at location (x, y). For GRID_SIZE, x and y
+    must each be between 0 and GRID_SIZE-1 inclusive.
+  - left: Press the left arrow key.
+  - right: Press the right arrow key.
+  - up: Press the up arrow key.
+  - down: Press the down arrow key.
+  - noop: Do nothing and continue to the next step.
+
+Python API example (interface demonstration):
+```python
+from env_api_client import RemoteEnvWrapper
+import json
+
+env = RemoteEnvWrapper()
+state, goal_reached = env.step('click 3 4')
+```
+
+RemoteEnvWrapper method semantics:
+- step(action: str) -> tuple[dict, bool]
+  Executes one valid action and returns a (state, goal_reached) tuple:
+    - state: the next visible state dict. state is a scene-graph-like dict (object lists + GRID_SIZE), e.g.:
+      {
+        "object_type_a": [{"position": {"x": 10, "y": 5}, "color": "red"}],
+        "object_type_b": [{"position": {"x": 3, "y": 4}, "color": "blue"}],
+        "GRID_SIZE": 20
+      }
+    Note that the indexing convention for positions is zero-indexed, so valid x and y values range from 0 to GRID_SIZE-1 inclusive.
+    - goal_reached: boolean indicating whether the goal state has been reached. It is true only if all positions in the highlight mask match the target state.
+  For click actions use the exact format: "click x y" (for example: "click 3 4").
+
+Work style:
+- Ground your actions in the provided initial state, goal scene graph, and mask.
+- Stop when goal_reached becomes true, or when you have strong evidence that it is impossible to reach the goal from the current state.
+- End with a short final summary of what you tried and whether you think the
+  goal was reached.
+- Keep calling a tool until you want to stop, as simply generating a message without tool calls will end the session.
+"""
+
+
+def build_variant_batch_eval_user_prompt(
+    *,
+    env_name: str,
+    user_instruction: str,
+    initial_state: str,
+    goal_scene_graph: str,
+    mask_scene_graph: str,
+) -> str:
+    return f"""Start now.
+Current Environment:
+{env_name}
+
+User instruction:
+{user_instruction}
+
+Initial state after reset:
+{initial_state}
+Positions are zero-indexed. Valid x and y values range from 0 to GRID_SIZE-1, inclusive.
+
+Goal scene graph:
+{goal_scene_graph}
+Goal positions are also zero-indexed. Valid x and y values range from 0 to GRID_SIZE-1, inclusive.
+
+Highlight mask:
+{mask_scene_graph}
+
+Only positions indicated by the highlight mask matter for success checking.
+
+Use run_command_in_docker to run short Python snippets that import
+RemoteEnvWrapper and call env.step(...). Do not call reset() or
+save_trajectory()."""
+
+
 def build_initial_user_prompt(
     env_name: str,
     *,
