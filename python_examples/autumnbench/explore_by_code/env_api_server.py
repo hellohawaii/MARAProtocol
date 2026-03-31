@@ -467,6 +467,10 @@ def backend_goal_status(
 
 
 if __name__ == "__main__":
+    import argparse
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8002)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=int(os.environ.get("ENV_API_PORT", "8002")))
+    args = parser.parse_args()
+    uvicorn.run(app, host="0.0.0.0", port=args.port)

@@ -3,6 +3,9 @@ import hashlib
 import json
 import os
 import shutil
+import socket
+import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -92,6 +95,32 @@ class RemoteEnvWrapper:
 """
 
 
+def _find_free_port() -> int:
+	with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+		s.bind(("127.0.0.1", 0))
+		return s.getsockname()[1]
+
+
+def _spawn_env_api_server(port: int) -> subprocess.Popen:
+	server_script = str(BASE_DIR / "env_api_server.py")
+	env = {**os.environ, "OBFUSCATED": "1"}
+	proc = subprocess.Popen(
+		[sys.executable, server_script, "--port", str(port)],
+		env=env,
+		stdout=subprocess.DEVNULL,
+		stderr=subprocess.DEVNULL,
+	)
+	deadline = time.time() + 10
+	while time.time() < deadline:
+		try:
+			urlrequest.urlopen(f"http://127.0.0.1:{port}/health", timeout=1)
+			return proc
+		except Exception:
+			time.sleep(0.2)
+	proc.terminate()
+	raise RuntimeError(f"env_api_server failed to start on port {port}")
+
+
 def ensure_workspace_dirs() -> None:
 	TEMPLATE_WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 	TRAJ_DIR.mkdir(parents=True, exist_ok=True)
@@ -114,7 +143,6 @@ class _DockerRuntime:
 		self.docker_build_context = (
 			Path(docker_build_context).resolve() if docker_build_context else None
 		)
-		self.env_api_base_url = env_api_base_url
 		self.env_name = env_name
 		self.task_mode = task_mode
 		self.client = docker.from_env()
@@ -122,6 +150,9 @@ class _DockerRuntime:
 		self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 		self.active_workspace_dir = (RUNS_WORKSPACE_ROOT_DIR / self.run_id).resolve()
 		self.container_name = f"autumnbench-shell-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+		self._server_port = _find_free_port()
+		self._server_process = _spawn_env_api_server(self._server_port)
+		self.env_api_base_url = f"http://host.docker.internal:{self._server_port}"
 		atexit.register(self.close)
 
 	def close(self) -> None:
@@ -131,6 +162,13 @@ class _DockerRuntime:
 			except DockerException:
 				pass
 			self.container = None
+		if getattr(self, "_server_process", None) is not None:
+			try:
+				self._server_process.terminate()
+				self._server_process.wait(timeout=5)
+			except Exception:
+				pass
+			self._server_process = None
 
 	def ensure_daemon_ready(self) -> None:
 		self.client.ping()
@@ -198,7 +236,7 @@ class _DockerRuntime:
 		internal: bool = False,
 		expect_ok: bool = True,
 	) -> Dict[str, Any]:
-		url = f"http://127.0.0.1:8002{path}"
+		url = f"http://127.0.0.1:{self._server_port}{path}"
 		payload = payload or {}
 		body = json.dumps(payload).encode("utf-8")
 		headers = {"Content-Type": "application/json"}
@@ -229,7 +267,7 @@ class _DockerRuntime:
 		return parsed
 
 	def _get_env_api(self, path: str, *, internal: bool = False) -> Dict[str, Any]:
-		url = f"http://127.0.0.1:8002{path}"
+		url = f"http://127.0.0.1:{self._server_port}{path}"
 		headers = {}
 		if internal:
 			headers["X-Autumnbench-Internal-Token"] = INTERNAL_CONTROL_TOKEN
