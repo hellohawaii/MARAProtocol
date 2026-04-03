@@ -393,6 +393,10 @@ class _DockerRuntime:
 			expect_ok=False,
 		)
 
+	def backend_get_trajectory(self) -> Dict[str, Any]:
+		self.ensure_ready()
+		return self._get_env_api("/_backend_get_trajectory", internal=True)
+
 	def backend_goal_status(self) -> Dict[str, Any]:
 		self.ensure_ready()
 		return self._get_env_api("/_backend_goal_status", internal=True)

@@ -340,6 +340,17 @@ class EnvSession:
     def backend_save_trajectory(self, filename: Optional[str]) -> Dict[str, Any]:
         return self.save_trajectory(filename)
 
+    def backend_get_trajectory(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "env": self.env_name,
+                "seed": self.seed,
+                "data_dir": str(self.data_dir) if self.data_dir else None,
+                "actions": list(self.actions),
+                "num_transitions": len(self.transitions),
+                "trajectory": list(self.transitions),
+            }
+
     def backend_goal_status(self) -> Dict[str, Any]:
         with self._lock:
             return {"goal_reached": self._check_goal_reached()}
@@ -451,6 +462,17 @@ def backend_save_trajectory(
     _verify_internal_token(x_autumnbench_internal_token)
     try:
         return session.backend_save_trajectory(payload.filename)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/_backend_get_trajectory")
+def backend_get_trajectory(
+    x_autumnbench_internal_token: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    _verify_internal_token(x_autumnbench_internal_token)
+    try:
+        return session.backend_get_trajectory()
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

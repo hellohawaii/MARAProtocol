@@ -286,6 +286,7 @@ async def arun_variant_batch_eval_agent(
     llm_model: str = "openai/gpt-5.4",
     max_turns: int = 120,
     timeout_seconds: int = 30,
+    yield_state_callback=None,
 ) -> Dict[str, Any]:
     llm = get_llm(model=llm_model)
     runtime.configure_environment(env_name=env_name, task_mode="planning")
@@ -341,6 +342,17 @@ async def arun_variant_batch_eval_agent(
                     "messages": _messages_to_jsonable(final_messages),
                 },
             )
+
+            if yield_state_callback and final_messages:
+                last_msg = final_messages[-1]
+                msg_type = getattr(last_msg, "type", "") or last_msg.__class__.__name__
+                if msg_type in ("tool", "ToolMessage"):
+                    try:
+                        trajectory_payload = runtime.backend_get_trajectory()
+                    except Exception:
+                        trajectory_payload = None
+                    if trajectory_payload:
+                        await yield_state_callback(trajectory_payload)
 
     final_response = ""
     if final_messages:
