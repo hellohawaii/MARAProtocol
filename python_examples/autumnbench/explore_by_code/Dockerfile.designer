@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+# Designer container: extends the base tool image with LangGraph so the
+# designer LLM can validate workflow.py inside the container via
+# `python -c "import workflow"`.
+WORKDIR /workspace
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+    langgraph \
+    langchain-openai \
+    langchain-anthropic \
+    langchain-google-genai

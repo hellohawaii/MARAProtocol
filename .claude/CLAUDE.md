@@ -30,3 +30,5 @@ Several files in the `explore_by_code` folder are important.
 `llm_workspace/check_traj_example.py` helps check a Python world model against saved trajectories.
 
 `shell_react_explorer.py` contains a ReAct agent equipped with shell tools for environment exploration and code synthesis.
+
+`baseline_optimizer.py` contains the core async logic for the baseline (fully autonomous) workflow optimization loop. It runs a designer LLM agent that writes a LangGraph workflow based on the instructions from the user and previous execution traces, then executes that workflow on K variants in parallel.

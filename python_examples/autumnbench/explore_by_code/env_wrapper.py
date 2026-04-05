@@ -137,6 +137,9 @@ class _DockerRuntime:
 		env_api_base_url: str,
 		env_name: Optional[str],
 		task_mode: str = "explore",
+		template_dir: Optional[Path] = None,
+		workspace_dir: Optional[Path] = None,
+		spawn_env_server: bool = True,
 	) -> None:
 		self.docker_image = docker_image
 		self.dockerfile_path = Path(dockerfile_path).resolve() if dockerfile_path else None
@@ -145,14 +148,24 @@ class _DockerRuntime:
 		)
 		self.env_name = env_name
 		self.task_mode = task_mode
+		self.template_dir = template_dir
 		self.client = docker.from_env()
 		self.container = None
 		self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-		self.active_workspace_dir = (RUNS_WORKSPACE_ROOT_DIR / self.run_id).resolve()
+		if workspace_dir is not None:
+			self.active_workspace_dir = Path(workspace_dir).resolve()
+		else:
+			self.active_workspace_dir = (RUNS_WORKSPACE_ROOT_DIR / self.run_id).resolve()
 		self.container_name = f"autumnbench-shell-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-		self._server_port = _find_free_port()
-		self._server_process = _spawn_env_api_server(self._server_port)
-		self.env_api_base_url = f"http://host.docker.internal:{self._server_port}"
+		self.spawn_env_server = spawn_env_server
+		if spawn_env_server:
+			self._server_port = _find_free_port()
+			self._server_process = _spawn_env_api_server(self._server_port)
+			self.env_api_base_url = f"http://host.docker.internal:{self._server_port}"
+		else:
+			self._server_port = None
+			self._server_process = None
+			self.env_api_base_url = None
 		atexit.register(self.close)
 
 	def close(self) -> None:
@@ -222,10 +235,11 @@ class _DockerRuntime:
 	def _prepare_run_workspace(self) -> None:
 		if self.active_workspace_dir.exists():
 			return
-		if not TEMPLATE_WORKSPACE_DIR.exists():
-			raise ValueError(f"Template workspace not found: {TEMPLATE_WORKSPACE_DIR}")
-		RUNS_WORKSPACE_ROOT_DIR.mkdir(parents=True, exist_ok=True)
-		shutil.copytree(TEMPLATE_WORKSPACE_DIR, self.active_workspace_dir, dirs_exist_ok=False)
+		src = self.template_dir or TEMPLATE_WORKSPACE_DIR
+		if not src.exists():
+			raise ValueError(f"Template workspace not found: {src}")
+		self.active_workspace_dir.parent.mkdir(parents=True, exist_ok=True)
+		shutil.copytree(src, self.active_workspace_dir, dirs_exist_ok=False)
 		(self.active_workspace_dir / "traj").mkdir(parents=True, exist_ok=True)
 
 	def _post_env_api(
@@ -249,7 +263,7 @@ class _DockerRuntime:
 			method="POST",
 		)
 		try:
-			with urlrequest.urlopen(req, timeout=10) as resp:
+			with urlrequest.urlopen(req, timeout=30) as resp:
 				raw = resp.read().decode("utf-8")
 		except urlerror.HTTPError as exc:
 			msg = exc.read().decode("utf-8", errors="replace")
@@ -273,7 +287,7 @@ class _DockerRuntime:
 			headers["X-Autumnbench-Internal-Token"] = INTERNAL_CONTROL_TOKEN
 		req = urlrequest.Request(url, headers=headers, method="GET")
 		try:
-			with urlrequest.urlopen(req, timeout=10) as resp:
+			with urlrequest.urlopen(req, timeout=30) as resp:
 				raw = resp.read().decode("utf-8")
 		except urlerror.HTTPError as exc:
 			msg = exc.read().decode("utf-8", errors="replace")
@@ -320,9 +334,10 @@ class _DockerRuntime:
 		else:
 			user_id = "1000:1000"
 		self._prepare_run_workspace()
-		self._set_env_api_workspace()
-		self._set_env_api_env_name()
-		self._set_env_api_task_mode()
+		if self.spawn_env_server:
+			self._set_env_api_workspace()
+			self._set_env_api_env_name()
+			self._set_env_api_task_mode()
 
 		try:
 			self.container = self.client.containers.run(
@@ -365,9 +380,10 @@ class _DockerRuntime:
 		if task_mode is not None:
 			self.task_mode = task_mode
 		self.ensure_ready()
-		self._set_env_api_workspace()
-		self._set_env_api_env_name()
-		self._set_env_api_task_mode()
+		if self.spawn_env_server:
+			self._set_env_api_workspace()
+			self._set_env_api_env_name()
+			self._set_env_api_task_mode()
 
 	def set_client_control_mode(self, mode: str) -> Dict[str, Any]:
 		self.ensure_ready()
@@ -627,6 +643,9 @@ def create_pinned_runtime(
 	env_api_base_url: str = "http://host.docker.internal:8002",
 	env_name: Optional[str] = None,
 	task_mode: str = "explore",
+	template_dir: Optional[Path] = None,
+	workspace_dir: Optional[Path] = None,
+	spawn_env_server: bool = True,
 ) -> _DockerRuntime:
 	ensure_workspace_dirs()
 	runtime = _DockerRuntime(
@@ -636,6 +655,9 @@ def create_pinned_runtime(
 		env_api_base_url=env_api_base_url,
 		env_name=env_name,
 		task_mode=task_mode,
+		template_dir=template_dir,
+		workspace_dir=workspace_dir,
+		spawn_env_server=spawn_env_server,
 	)
 	runtime.ensure_ready()
 	return runtime
