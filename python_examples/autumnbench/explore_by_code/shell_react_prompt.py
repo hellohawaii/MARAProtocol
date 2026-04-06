@@ -1191,7 +1191,7 @@ Shell information:
   execute a few actions, inspect the resulting state, then decide the next move
   in a follow-up call; incremental interaction with intermediate feedback is
   easier and more reliable than planning a long action sequence upfront.
-- The environment has been reset for you already, and the initial state is provided in the prompt. Do NOT call reset().
+- The environment has been reset for you already, and the initial state is provided in the prompt. You may call env.reset() at any time to restart from the initial state (e.g., if you get stuck or want to try a different approach). After reset, the environment returns to the exact same initial state shown below.
 - Each run_command_in_docker call has a 30-second execution time limit. Avoid
   long-running computations such as exhaustive search or brute-force planning.
 - The shell will return "✅ Command executed successfully." if your command runs without errors. Note that this does not necessarily mean your code is correct or that you have reached the goal state — it only indicates that the command ran without crashing. You must inspect the resulting state or the goal_reached flag after each action to evaluate your progress toward the goal.
@@ -1234,6 +1234,8 @@ RemoteEnvWrapper method semantics:
     Note that the indexing convention for positions is zero-indexed, so valid x and y values range from 0 to GRID_SIZE-1 inclusive.
     - goal_reached: boolean indicating whether the goal state has been reached. It is true only if all positions in the highlight mask match the target state.
   For click actions use the exact format: "click x y" (for example: "click 3 4").
+- reset() -> dict
+  Resets the environment to its initial state. Returns the initial state dict (same format as state from step()). Use this if you want to start over from the beginning. All previous actions are discarded.
 
 Work style:
 - Ground your actions in the provided initial state, goal scene graph, and mask.
@@ -1273,7 +1275,7 @@ Highlight mask:
 Only positions indicated by the highlight mask matter for success checking.
 
 Use run_command_in_docker to run short Python snippets that import
-RemoteEnvWrapper and call env.step(...). Do not call reset() or
+RemoteEnvWrapper and call env.step(...) or env.reset(). Do not call
 save_trajectory()."""
 
 

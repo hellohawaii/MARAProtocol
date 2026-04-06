@@ -96,7 +96,7 @@ class SetTaskModeRequest(BaseModel):
 
 
 class SetClientControlModeRequest(BaseModel):
-    mode: str = Field(..., description="Client control mode: 'full' or 'restricted'")
+    mode: str = Field(..., description="Client control mode: 'full', 'restricted', or 'reset_only'")
 
 
 class EnvSession:
@@ -178,7 +178,7 @@ class EnvSession:
 
     def set_client_control_mode(self, mode: str) -> Dict[str, Any]:
         with self._lock:
-            if mode not in ("full", "restricted"):
+            if mode not in ("full", "restricted", "reset_only"):
                 raise ValueError(f"Invalid client_control_mode: {mode}")
             self.client_control_mode = mode
             return {"ok": True, "client_control_mode": self.client_control_mode}
@@ -196,7 +196,7 @@ class EnvSession:
         return program_text
 
     def _client_reset_allowed(self) -> bool:
-        return self.client_control_mode == "full"
+        return self.client_control_mode in ("full", "reset_only")
 
     def _client_save_allowed(self) -> bool:
         return self.client_control_mode == "full"

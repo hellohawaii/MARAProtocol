@@ -82,7 +82,7 @@ class RemoteEnvWrapper:
             raise RuntimeError(f"Invalid JSON response from {url}: {resp_body}") from exc
 
     def reset(self) -> Dict[str, Any]:
-        raise RuntimeError("reset() is disabled in variant batch evaluator mode. The backend already prepared the environment.")
+        return self._post("/reset", {})
 
     def step(self, action: str):
         result = self._post("/step", {"action": action})

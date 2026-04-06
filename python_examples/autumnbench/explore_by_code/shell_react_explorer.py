@@ -291,7 +291,7 @@ async def arun_variant_batch_eval_agent(
     llm = get_llm(model=llm_model)
     runtime.configure_environment(env_name=env_name, task_mode="planning")
     runtime.install_batch_eval_env_client()
-    runtime.set_client_control_mode("restricted")
+    runtime.set_client_control_mode("reset_only")
     env_tools = get_env_tools_for_runtime(runtime, timeout_seconds=timeout_seconds)
 
     agent = create_agent(
