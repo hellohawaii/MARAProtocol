@@ -34,6 +34,7 @@ from env_wrapper import (  # noqa: E402
     get_env_tools,
     get_env_tools_for_runtime,
     get_or_create_runtime_info,
+    get_runtime_background,
 )
 from hci_tools import get_ask_human_tool, get_dashboard_tools, get_finish_tool, get_hci_tools, FINISH_TOOL_NAME  # noqa: E402
 from log_utils import _CHECK_TRAJ_PATTERN  # noqa: E402
@@ -46,8 +47,10 @@ from shell_react_prompt import (  # noqa: E402
     SHELL_REACT_SYSTEM_PROMPT,
     SHELL_REACT_VARIANT_BATCH_EVAL_SYSTEM_PROMPT,
     build_initial_user_prompt,
+    build_step_limits_text,
     build_variant_batch_eval_user_prompt,
 )
+from env_api_server import MAX_TOTAL_STEPS, MAX_STEPS_IN_ONE_EPISODE  # noqa: E402
 
 DEFAULT_DOCKERFILE_PATH = str((_FILE_DIR / "Dockerfile.tool").resolve())
 
@@ -264,12 +267,13 @@ def _tool_call_args(tool_call: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _select_system_prompt(task_mode: str, collaborative: bool, orchestrator: str) -> str:
+    step_limits = build_step_limits_text(MAX_TOTAL_STEPS, MAX_STEPS_IN_ONE_EPISODE)
     if task_mode == "planning":
         if orchestrator == "model":
-            return SHELL_REACT_PLANNING_MODEL_ORCHESTRATED_SYSTEM_PROMPT
+            return SHELL_REACT_PLANNING_MODEL_ORCHESTRATED_SYSTEM_PROMPT.replace("{step_limits}", step_limits)
         if collaborative:
-            return SHELL_REACT_PLANNING_HUMAN_COLLAB_SYSTEM_PROMPT
-        return SHELL_REACT_PLANNING_SYSTEM_PROMPT
+            return SHELL_REACT_PLANNING_HUMAN_COLLAB_SYSTEM_PROMPT.replace("{step_limits}", step_limits)
+        return SHELL_REACT_PLANNING_SYSTEM_PROMPT.replace("{step_limits}", step_limits)
     if orchestrator == "model":
         return SHELL_REACT_MODEL_ORCHESTRATED_SYSTEM_PROMPT
     if collaborative:
@@ -287,6 +291,7 @@ async def arun_variant_batch_eval_agent(
     max_turns: int = 120,
     timeout_seconds: int = 30,
     yield_state_callback=None,
+    background_color: str = "",
 ) -> Dict[str, Any]:
     llm = get_llm(model=llm_model)
     runtime.configure_environment(env_name=env_name, task_mode="planning")
@@ -294,10 +299,13 @@ async def arun_variant_batch_eval_agent(
     runtime.set_client_control_mode("reset_only")
     env_tools = get_env_tools_for_runtime(runtime, timeout_seconds=timeout_seconds)
 
+    step_limits = build_step_limits_text(MAX_TOTAL_STEPS, MAX_STEPS_IN_ONE_EPISODE)
+    system_prompt = SHELL_REACT_VARIANT_BATCH_EVAL_SYSTEM_PROMPT.replace("{step_limits}", step_limits)
+
     agent = create_agent(
         model=llm,
         tools=env_tools,
-        system_prompt=SHELL_REACT_VARIANT_BATCH_EVAL_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         middleware=[
             ModelCallLimitMiddleware(
                 run_limit=max_turns,
@@ -313,6 +321,7 @@ async def arun_variant_batch_eval_agent(
         initial_state=json.dumps(initial_state, indent=2),
         goal_scene_graph=goal_sg or "null",
         mask_scene_graph=mask_sg or "null",
+        background_color=background_color,
     )
 
     transcript_path = (
@@ -431,14 +440,17 @@ def run_shell_react_agent(
     )
 
     goal_sg, mask_sg = (None, None)
+    bg_color = ""
     if task_mode == "planning":
         goal_sg, mask_sg = _load_planning_goal(env_name)
+        bg_color = get_runtime_background()
     user_prompt = build_initial_user_prompt(
         env_name,
         collaborative=collaborative,
         task_mode=task_mode,
         goal_scene_graph=goal_sg or "",
         mask_scene_graph=mask_sg or "",
+        background_color=bg_color,
     )
 
     # Persist logs under the same run_id used by llm_workspace_runs.
@@ -648,8 +660,10 @@ async def arun_shell_react_agent(
     )
 
     goal_sg, mask_sg = (None, None)
+    bg_color = ""
     if task_mode == "planning":
         goal_sg, mask_sg = _load_planning_goal(env_name)
+        bg_color = get_runtime_background()
     user_prompt = build_initial_user_prompt(
         env_name,
         collaborative=collaborative,
@@ -657,6 +671,7 @@ async def arun_shell_react_agent(
         task_mode=task_mode,
         goal_scene_graph=goal_sg or "",
         mask_scene_graph=mask_sg or "",
+        background_color=bg_color,
     )
 
     # Persist logs under the same run_id used by llm_workspace_runs.

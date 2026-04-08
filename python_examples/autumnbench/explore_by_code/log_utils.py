@@ -28,7 +28,10 @@ def safe_name(value: str) -> str:
 
 
 def run_logs_dir(run_id: Optional[str]) -> Path:
-    out_dir = LOGS_ROOT_DIR / safe_name(run_id or "no_run_id")
+    raw = run_id or "no_run_id"
+    # Support hierarchical run_ids like "session/trial/variant"
+    parts = [safe_name(part) for part in raw.split("/") if part]
+    out_dir = LOGS_ROOT_DIR.joinpath(*parts) if parts else LOGS_ROOT_DIR / "unknown"
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
 

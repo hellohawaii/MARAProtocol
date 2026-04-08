@@ -650,6 +650,7 @@ Multi-step workflow:
   both easier and more reliable than planning a long action sequence upfront.
 - Each run_command_in_docker call has a 30-second execution time limit. Avoid
   long-running computations such as exhaustive search or brute-force planning.
+{step_limits}
 - Call reset() only when you want to start a fresh attempt from the initial state.
 - After each complete attempt (from reset to success or giving up), you MUST call
   save_trajectory() with a filename prefixed planning_attempt_N (e.g.
@@ -877,6 +878,7 @@ Multi-step workflow:
   both easier and more reliable than planning a long action sequence upfront.
 - Each run_command_in_docker call has a 30-second execution time limit. Avoid
   long-running computations such as exhaustive search or brute-force planning.
+{step_limits}
 - Call reset() only when you want to start a fresh attempt from the initial state.
 - After each complete attempt (from reset to success or giving up), call
   save_trajectory() with a filename prefixed planning_attempt_N (e.g.
@@ -1098,6 +1100,7 @@ Multi-step workflow:
   both easier and more reliable than planning a long action sequence upfront.
 - Each run_command_in_docker call has a 30-second execution time limit. Avoid
   long-running computations such as exhaustive search or brute-force planning.
+{step_limits}
 - Call reset() only when you want to start a fresh attempt from the initial state.
 - After each complete attempt (from reset to success or giving up), call
   save_trajectory() with a filename prefixed planning_attempt_N (e.g.
@@ -1189,11 +1192,12 @@ Shell information:
   run_command_in_docker calls. You do NOT
   need to reach the goal in a single script. Prefer writing small scripts that
   execute a few actions, inspect the resulting state, then decide the next move
-  in a follow-up call; incremental interaction with intermediate feedback is
+  in a follow-up call; incremental interaction with intermediate observations is
   easier and more reliable than planning a long action sequence upfront.
 - The environment has been reset for you already, and the initial state is provided in the prompt. You may call env.reset() at any time to restart from the initial state (e.g., if you get stuck or want to try a different approach). After reset, the environment returns to the exact same initial state shown below.
 - Each run_command_in_docker call has a 30-second execution time limit. Avoid
   long-running computations such as exhaustive search or brute-force planning.
+{step_limits}
 - The shell will return "✅ Command executed successfully." if your command runs without errors. Note that this does not necessarily mean your code is correct or that you have reached the goal state — it only indicates that the command ran without crashing. You must inspect the resulting state or the goal_reached flag after each action to evaluate your progress toward the goal.
 
 Your goal is to follow the user's instruction and try to reach the provided
@@ -1241,9 +1245,31 @@ Work style:
 - Ground your actions in the provided initial state, goal scene graph, and mask.
 - Stop when goal_reached becomes true, or when you have strong evidence that it is impossible to reach the goal from the current state.
 - End with a short final summary of what you tried and whether you think the
-  goal was reached.
+  goal was reached. Never give a summary in the middle of the session, only at the end after you are done acting.
 - Keep calling a tool until you want to stop, as simply generating a message without tool calls will end the session.
 """
+
+
+def build_step_limits_text(
+    max_total_steps: "int | None",
+    max_steps_in_one_episode: "int | None",
+) -> str:
+    parts = []
+    if max_total_steps is not None:
+        parts.append(
+            f"- The environment enforces a hard limit of {max_total_steps} total steps per session.\n"
+            f"  This limit counts all steps across all resets — resetting the environment\n"
+            f"  does NOT reset the step counter. Once you reach {max_total_steps} steps, further\n"
+            f"  step() calls will fail with an error. Budget your steps carefully."
+        )
+    if max_steps_in_one_episode is not None:
+        parts.append(
+            f"- The environment enforces a limit of {max_steps_in_one_episode} steps per episode.\n"
+            f"  This counter resets every time you call reset(). Once you reach\n"
+            f"  {max_steps_in_one_episode} steps in a single episode, further step() calls\n"
+            f"  will fail with an error until you call reset()."
+        )
+    return "\n".join(parts)
 
 
 def build_variant_batch_eval_user_prompt(
@@ -1253,7 +1279,14 @@ def build_variant_batch_eval_user_prompt(
     initial_state: str,
     goal_scene_graph: str,
     mask_scene_graph: str,
+    background_color: str = "",
 ) -> str:
+    background_block = ""
+    if background_color:
+        background_block = (
+            f"\nBackground color:\n{background_color}\n"
+            "Grid cells not occupied by any object are filled with this background color.\n"
+        )
     return f"""Start now.
 Current Environment:
 {env_name}
@@ -1264,7 +1297,7 @@ User instruction:
 Initial state after reset:
 {initial_state}
 Positions are zero-indexed. Valid x and y values range from 0 to GRID_SIZE-1, inclusive.
-
+{background_block}
 Goal scene graph:
 {goal_scene_graph}
 Goal positions are also zero-indexed. Valid x and y values range from 0 to GRID_SIZE-1, inclusive.
@@ -1287,14 +1320,22 @@ def build_initial_user_prompt(
     task_mode: str = "explore",
     goal_scene_graph: str = "",
     mask_scene_graph: str = "",
+    background_color: str = "",
 ) -> str:
     if task_mode == "planning":
+        background_block = ""
+        if background_color:
+            background_block = (
+                f"\nBackground color: {background_color}\n"
+                "Grid cells not occupied by any object are filled with this background color.\n"
+            )
         goal_block = (
             f"\n\nYour goal is to reach the following target state (scene-graph format):\n"
             f"{goal_scene_graph}\n\n"
             f"Only positions indicated by the highlight mask need to match the goal. "
             f"Positions not in the mask are ignored for success checking.\n"
             f"Highlight mask:\n{mask_scene_graph}\n"
+            f"{background_block}"
         )
         if orchestrator == "model":
             return (

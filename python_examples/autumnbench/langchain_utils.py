@@ -43,6 +43,26 @@ MODEL_PRICING = {
             {"up_to_tokens": float("inf"), "input": 2.50, "output": 15.00},
         ]
     },
+    "openai/gpt-5.4-mini": {
+        "tiers": [
+            {"up_to_tokens": float("inf"), "input": 0.75, "output": 4.50},
+        ]
+    },
+    "anthropic/claude-haiku-4.5": {
+        "tiers": [
+            {"up_to_tokens": float("inf"), "input": 1.00, "output": 5.00},
+        ]
+    },
+    "google/gemini-3.1-pro-preview": {
+        "tiers": [
+            {"up_to_tokens": float("inf"), "input": 2.50, "output": 15.00},
+        ]
+    },
+    "google/gemini-3.1-flash-lite-preview": {
+        "tiers": [
+            {"up_to_tokens": float("inf"), "input": 0.25, "output": 1.50},
+        ]
+    },
     "default": {
         "tiers": [
             {"up_to_tokens": float("inf"), "input": 1.00, "output": 3.00}

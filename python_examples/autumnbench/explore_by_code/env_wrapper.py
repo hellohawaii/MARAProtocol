@@ -140,6 +140,7 @@ class _DockerRuntime:
 		template_dir: Optional[Path] = None,
 		workspace_dir: Optional[Path] = None,
 		spawn_env_server: bool = True,
+		run_id: Optional[str] = None,
 	) -> None:
 		self.docker_image = docker_image
 		self.dockerfile_path = Path(dockerfile_path).resolve() if dockerfile_path else None
@@ -151,7 +152,7 @@ class _DockerRuntime:
 		self.template_dir = template_dir
 		self.client = docker.from_env()
 		self.container = None
-		self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+		self.run_id = run_id or datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 		if workspace_dir is not None:
 			self.active_workspace_dir = Path(workspace_dir).resolve()
 		else:
@@ -417,6 +418,10 @@ class _DockerRuntime:
 		self.ensure_ready()
 		return self._get_env_api("/_backend_goal_status", internal=True)
 
+	def backend_get_background(self) -> Dict[str, Any]:
+		self.ensure_ready()
+		return self._get_env_api("/_backend_get_background", internal=True)
+
 	def install_batch_eval_env_client(self) -> Path:
 		self._prepare_run_workspace()
 		out_path = self.active_workspace_dir / "env_api_client.py"
@@ -616,6 +621,22 @@ def get_runtime_info() -> dict:
 		return _RUNTIME_SESSION.get_runtime_info()
 
 
+def get_runtime_background() -> str:
+	"""Return the background color from the current runtime session.
+
+	Requires the environment to have been reset at least once.
+	Returns an empty string if no runtime is available or the call fails.
+	"""
+	with _RUNTIME_LOCK:
+		if _RUNTIME_SESSION is None:
+			return ""
+	try:
+		result = _RUNTIME_SESSION.backend_get_background()
+		return result.get("background", "")
+	except Exception:
+		return ""
+
+
 def get_or_create_runtime_info(
 	docker_image: Optional[str] = None,
 	dockerfile_path: Optional[str] = None,
@@ -646,6 +667,7 @@ def create_pinned_runtime(
 	template_dir: Optional[Path] = None,
 	workspace_dir: Optional[Path] = None,
 	spawn_env_server: bool = True,
+	run_id: Optional[str] = None,
 ) -> _DockerRuntime:
 	ensure_workspace_dirs()
 	runtime = _DockerRuntime(
@@ -658,6 +680,7 @@ def create_pinned_runtime(
 		template_dir=template_dir,
 		workspace_dir=workspace_dir,
 		spawn_env_server=spawn_env_server,
+		run_id=run_id,
 	)
 	runtime.ensure_ready()
 	return runtime

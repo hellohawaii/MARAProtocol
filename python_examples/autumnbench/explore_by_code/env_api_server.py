@@ -21,6 +21,8 @@ INTERNAL_CONTROL_TOKEN = os.environ.get(
     "AUTUMNBENCH_INTERNAL_CONTROL_TOKEN",
     "autumnbench-internal-control-static-token",
 )
+MAX_TOTAL_STEPS = None
+MAX_STEPS_IN_ONE_EPISODE = 1500  # Set to an int to enforce per-episode limit
 
 for path in (str(MARA_ROOT), str(PY_EXAMPLES_DIR), str(AUTUMNBENCH_DIR)):
     if path not in sys.path:
@@ -115,6 +117,8 @@ class EnvSession:
         self.transitions: List[Dict[str, Any]] = []
         self.task_mode: str = "explore"
         self.client_control_mode: str = "full"
+        self._total_step_count: int = 0
+        self._episode_step_count: int = 0
         self._goal_grid: Optional[List[List[str]]] = None
         self._goal_mask: Optional[List[List[int]]] = None
         self._color_dict: Optional[Dict[int, str]] = None
@@ -262,6 +266,7 @@ class EnvSession:
             self.current_state = self._render_state()
             self.actions = []
             self.transitions = []
+            self._episode_step_count = 0
 
             return self.current_state
 
@@ -273,11 +278,25 @@ class EnvSession:
             if self.interpreter is None or self.current_state is None:
                 raise RuntimeError("Environment not initialized. Call reset first.")
 
+            if MAX_TOTAL_STEPS is not None and self._total_step_count >= MAX_TOTAL_STEPS:
+                raise RuntimeError(
+                    f"Maximum total step limit of {MAX_TOTAL_STEPS} reached for this session. "
+                    f"No further steps are allowed."
+                )
+
+            if MAX_STEPS_IN_ONE_EPISODE is not None and self._episode_step_count >= MAX_STEPS_IN_ONE_EPISODE:
+                raise RuntimeError(
+                    f"Maximum episode step limit of {MAX_STEPS_IN_ONE_EPISODE} reached. "
+                    f"Call reset() to start a new episode."
+                )
+
             valid = self._apply_action(action)
             if not valid:
                 raise ValueError(f"Unsupported action: {action}")
 
             self.interpreter.step()
+            self._total_step_count += 1
+            self._episode_step_count += 1
             next_state = self._render_state()
 
             self.transitions.append(
@@ -355,6 +374,12 @@ class EnvSession:
         with self._lock:
             return {"goal_reached": self._check_goal_reached()}
 
+    def backend_get_background(self) -> Dict[str, Any]:
+        with self._lock:
+            if self.interpreter is None:
+                raise RuntimeError("Environment not initialized. Call reset first.")
+            return {"background": self.interpreter.get_background()}
+
 
 app = FastAPI(title="AutumnBench Environment API", version="1.0.0")
 session = EnvSession()
@@ -373,6 +398,10 @@ def health() -> Dict[str, Any]:
         "workspace_dir": str(session.workspace_dir),
         "run_id": session.current_run_id,
         "internal_control_token_available": True,
+        "total_steps_taken": session._total_step_count,
+        "max_steps": MAX_TOTAL_STEPS,
+        "max_steps_in_one_episode": MAX_STEPS_IN_ONE_EPISODE,
+        "episode_steps_taken": session._episode_step_count,
     }
 
 
@@ -428,6 +457,9 @@ def step_env(payload: StepRequest) -> Dict[str, Any]:
         return session.step(payload.action)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        status = 429 if "step limit" in str(exc).lower() else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -484,6 +516,17 @@ def backend_goal_status(
     _verify_internal_token(x_autumnbench_internal_token)
     try:
         return session.backend_goal_status()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/_backend_get_background")
+def backend_get_background(
+    x_autumnbench_internal_token: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    _verify_internal_token(x_autumnbench_internal_token)
+    try:
+        return session.backend_get_background()
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
