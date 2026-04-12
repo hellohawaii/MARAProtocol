@@ -422,6 +422,10 @@ class _DockerRuntime:
 		self.ensure_ready()
 		return self._get_env_api("/_backend_get_background", internal=True)
 
+	def backend_health(self) -> Dict[str, Any]:
+		self.ensure_ready()
+		return self._get_env_api("/health")
+
 	def install_batch_eval_env_client(self) -> Path:
 		self._prepare_run_workspace()
 		out_path = self.active_workspace_dir / "env_api_client.py"

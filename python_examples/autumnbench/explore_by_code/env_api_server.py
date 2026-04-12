@@ -21,6 +21,7 @@ INTERNAL_CONTROL_TOKEN = os.environ.get(
     "AUTUMNBENCH_INTERNAL_CONTROL_TOKEN",
     "autumnbench-internal-control-static-token",
 )
+# MAX_TOTAL_STEPS = 1500
 MAX_TOTAL_STEPS = None
 MAX_STEPS_IN_ONE_EPISODE = 1500  # Set to an int to enforce per-episode limit
 
@@ -119,6 +120,7 @@ class EnvSession:
         self.client_control_mode: str = "full"
         self._total_step_count: int = 0
         self._episode_step_count: int = 0
+        self._episode_id: int = -1
         self._goal_grid: Optional[List[List[str]]] = None
         self._goal_mask: Optional[List[List[int]]] = None
         self._color_dict: Optional[Dict[int, str]] = None
@@ -267,6 +269,7 @@ class EnvSession:
             self.actions = []
             self.transitions = []
             self._episode_step_count = 0
+            self._episode_id += 1
 
             return self.current_state
 
@@ -339,6 +342,7 @@ class EnvSession:
                 "env": self.env_name,
                 "seed": self.seed,
                 "data_dir": str(self.data_dir),
+                "episode_id": self._episode_id,
                 "actions": list(self.actions),
                 "num_transitions": len(self.transitions),
                 "trajectory": list(self.transitions),
@@ -365,6 +369,7 @@ class EnvSession:
                 "env": self.env_name,
                 "seed": self.seed,
                 "data_dir": str(self.data_dir) if self.data_dir else None,
+                "episode_id": self._episode_id,
                 "actions": list(self.actions),
                 "num_transitions": len(self.transitions),
                 "trajectory": list(self.transitions),

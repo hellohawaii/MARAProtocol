@@ -144,6 +144,31 @@ def _message_content_to_text(content: Any) -> str:
     return str(content)
 
 
+def _count_words(text: str) -> int:
+    return len(re.findall(r"\S+", text))
+
+
+def _trajectory_episode_id(payload: Optional[Dict[str, Any]]) -> Optional[int]:
+    if not isinstance(payload, dict):
+        return None
+    episode_id = payload.get("episode_id")
+    return episode_id if isinstance(episode_id, int) else None
+
+
+def _persist_episode_trajectory(
+    episodes_dir: Path,
+    trajectory_payload: Dict[str, Any],
+) -> Optional[str]:
+    if not trajectory_payload or not trajectory_payload.get("trajectory"):
+        return None
+    episode_id = _trajectory_episode_id(trajectory_payload)
+    if episode_id is None:
+        return None
+    out_path = episodes_dir / f"episode_{episode_id:03d}.json"
+    _write_json(out_path, trajectory_payload)
+    return str(out_path)
+
+
 def _message_to_jsonable(msg: Any) -> Dict[str, Any]:
     return {
         "type": getattr(msg, "type", msg.__class__.__name__),
@@ -328,10 +353,31 @@ async def arun_variant_batch_eval_agent(
         _FILE_DIR / "logs" / runtime.run_id / f"variant_batch_eval_{env_name}_transcript.json"
     ).resolve()
     detail_log_dir = transcript_path.with_suffix("") / "details"
+    episodes_dir = transcript_path.with_suffix("") / "episodes"
     trace_cb = _JsonTraceCallback(detail_log_dir)
 
     final_messages: List[Any] = []
     stream_event_count = 0
+    latest_trajectory_payload: Optional[Dict[str, Any]] = None
+    saved_episode_paths: List[str] = []
+
+    def _consume_trajectory_payload(trajectory_payload: Optional[Dict[str, Any]]) -> None:
+        nonlocal latest_trajectory_payload
+        if not trajectory_payload:
+            return
+        previous_episode_id = _trajectory_episode_id(latest_trajectory_payload)
+        current_episode_id = _trajectory_episode_id(trajectory_payload)
+        if (
+            latest_trajectory_payload
+            and previous_episode_id is not None
+            and current_episode_id is not None
+            and current_episode_id != previous_episode_id
+        ):
+            saved_path = _persist_episode_trajectory(episodes_dir, latest_trajectory_payload)
+            if saved_path is not None:
+                saved_episode_paths.append(saved_path)
+        latest_trajectory_payload = trajectory_payload
+
     async for event in agent.astream(
         {"messages": [{"role": "user", "content": user_prompt}]},
         config={"recursion_limit": 1000, "callbacks": [trace_cb]},
@@ -352,7 +398,7 @@ async def arun_variant_batch_eval_agent(
                 },
             )
 
-            if yield_state_callback and final_messages:
+            if final_messages:
                 last_msg = final_messages[-1]
                 msg_type = getattr(last_msg, "type", "") or last_msg.__class__.__name__
                 if msg_type in ("tool", "ToolMessage"):
@@ -360,23 +406,65 @@ async def arun_variant_batch_eval_agent(
                         trajectory_payload = runtime.backend_get_trajectory()
                     except Exception:
                         trajectory_payload = None
-                    if trajectory_payload:
+                    _consume_trajectory_payload(trajectory_payload)
+                    if yield_state_callback and trajectory_payload:
                         await yield_state_callback(trajectory_payload)
+
+    try:
+        final_trajectory_payload = runtime.backend_get_trajectory()
+    except Exception:
+        final_trajectory_payload = None
+    _consume_trajectory_payload(final_trajectory_payload)
+    final_episode_path = _persist_episode_trajectory(episodes_dir, latest_trajectory_payload or {})
+    if final_episode_path is not None and final_episode_path not in saved_episode_paths:
+        saved_episode_paths.append(final_episode_path)
 
     final_response = ""
     if final_messages:
         final_response = _message_content_to_text(getattr(final_messages[-1], "content", ""))
 
+    # Save trajectory and check goal status
+    trajectory_path = None
+    goal_reached = False
+    total_steps_taken = None
+    episode_steps_taken = None
+    try:
+        trajectory_result = runtime.backend_save_trajectory(env_name)
+        trajectory_path = trajectory_result.get("saved_path")
+    except Exception:
+        pass
+    try:
+        goal_status = runtime.backend_goal_status()
+        goal_reached = bool(goal_status.get("goal_reached"))
+    except Exception:
+        pass
+    try:
+        health_status = runtime.backend_health()
+        total_steps_taken = health_status.get("total_steps_taken")
+        episode_steps_taken = health_status.get("episode_steps_taken")
+    except Exception:
+        pass
+
+    instruction_word_count = _count_words(user_instruction)
+
     result: Dict[str, Any] = {
         "ok": True,
         "env_name": env_name,
         "llm_model": llm_model,
+        "user_instruction": user_instruction,
+        "instruction_word_count": instruction_word_count,
         "max_turns": max_turns,
         "timeout_seconds": timeout_seconds,
         "num_messages": len(final_messages),
         "final_response": final_response,
         "runtime_info": runtime.get_runtime_info(),
         "stream_event_count": stream_event_count,
+        "goal_reached": goal_reached,
+        "total_steps_taken": total_steps_taken,
+        "episode_steps_taken": episode_steps_taken,
+        "saved_episode_count": len(saved_episode_paths),
+        "saved_episode_paths": saved_episode_paths,
+        "trajectory_path": trajectory_path,
     }
 
     payload = {
