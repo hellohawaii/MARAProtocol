@@ -10,6 +10,10 @@ from planning_utils import load_color_dict, load_planning_data
 
 
 _VARIANT_ENV_PATTERN = re.compile(r"^(?P<base>[A-Za-z0-9]+)_v\d+$")
+# Subtask variants: e.g. 7XF97_v0002_move_cloud_t01 -> dir 7XF97-move_cloud
+_SUBTASK_VARIANT_PATTERN = re.compile(
+    r"^(?P<base>[A-Za-z0-9]+)_v\d+_(?P<phase>[a-z_]+)_t\d+$"
+)
 
 
 def get_variant_base_env_name(env_name: str) -> Optional[str]:
@@ -19,11 +23,25 @@ def get_variant_base_env_name(env_name: str) -> Optional[str]:
     return match.group("base")
 
 
+def _get_subtask_dir_name(env_name: str) -> Optional[str]:
+    """Return the directory name for a subtask variant, e.g. '7XF97-move_cloud'."""
+    match = _SUBTASK_VARIANT_PATTERN.match(env_name)
+    if not match:
+        return None
+    return f"{match.group('base')}-{match.group('phase')}"
+
+
 def is_variant_env_name(env_name: str) -> bool:
-    return get_variant_base_env_name(env_name) is not None
+    return get_variant_base_env_name(env_name) is not None or _get_subtask_dir_name(env_name) is not None
 
 
 def resolve_variant_env_dir(base_benchmark_dir: Path, env_name: str) -> Optional[Path]:
+    # Check subtask pattern first (more specific)
+    subtask_dir = _get_subtask_dir_name(env_name)
+    if subtask_dir:
+        env_dir = (base_benchmark_dir / "program_with_testcases" / subtask_dir).resolve()
+        return env_dir if env_dir.is_dir() else None
+    # Fall back to base variant pattern
     base_name = get_variant_base_env_name(env_name)
     if not base_name:
         return None
