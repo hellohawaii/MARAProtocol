@@ -1250,6 +1250,20 @@ Work style:
 """
 
 
+SHELL_REACT_VARIANT_BATCH_EVAL_STEP_EFFICIENCY_SYSTEM_GUIDANCE = """\
+Step-efficiency priority:
+- Reaching the goal is still the primary objective.
+- Use environment interactions carefully, and while preserving your ability to reach the goal, keep the total number of environment steps as low as possible.
+- Total environment steps include exploratory steps and the steps used to finally reach the goal; calling reset() does not reset this total.
+"""
+
+
+SHELL_REACT_VARIANT_BATCH_EVAL_STEP_EFFICIENCY_USER_GUIDANCE = """\
+Step-efficiency preference:
+Reach the goal if you can. Use environment interactions carefully, and while preserving your ability to reach the goal, keep the total number of environment steps as low as possible. This total includes every exploratory step plus the steps used to reach the goal; reset() starts the state over but does not reset the total step count.
+"""
+
+
 def build_step_limits_text(
     max_total_steps: "int | None",
     max_steps_in_one_episode: "int | None",
@@ -1280,6 +1294,7 @@ def build_variant_batch_eval_user_prompt(
     goal_scene_graph: str,
     mask_scene_graph: str,
     background_color: str = "",
+    prefer_fewer_steps: bool = False,
 ) -> str:
     background_block = ""
     if background_color:
@@ -1287,12 +1302,16 @@ def build_variant_batch_eval_user_prompt(
             f"\nBackground color:\n{background_color}\n"
             "Grid cells not occupied by any object are filled with this background color.\n"
         )
+    step_efficiency_block = ""
+    if prefer_fewer_steps:
+        step_efficiency_block = f"\n{SHELL_REACT_VARIANT_BATCH_EVAL_STEP_EFFICIENCY_USER_GUIDANCE}"
     return f"""Start now.
 Current Environment:
 {env_name}
 
 User instruction:
 {user_instruction}
+{step_efficiency_block}
 
 Initial state after reset:
 {initial_state}

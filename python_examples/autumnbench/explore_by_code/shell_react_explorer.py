@@ -44,6 +44,7 @@ from shell_react_prompt import (  # noqa: E402
     SHELL_REACT_PLANNING_HUMAN_COLLAB_SYSTEM_PROMPT,
     SHELL_REACT_PLANNING_MODEL_ORCHESTRATED_SYSTEM_PROMPT,
     SHELL_REACT_PLANNING_SYSTEM_PROMPT,
+    SHELL_REACT_VARIANT_BATCH_EVAL_STEP_EFFICIENCY_SYSTEM_GUIDANCE,
     SHELL_REACT_SYSTEM_PROMPT,
     SHELL_REACT_VARIANT_BATCH_EVAL_SYSTEM_PROMPT,
     build_initial_user_prompt,
@@ -317,6 +318,7 @@ async def arun_variant_batch_eval_agent(
     timeout_seconds: int = 30,
     yield_state_callback=None,
     background_color: str = "",
+    prefer_fewer_steps: bool = False,
 ) -> Dict[str, Any]:
     llm = get_llm(model=llm_model)
     runtime.configure_environment(env_name=env_name, task_mode="planning")
@@ -326,6 +328,8 @@ async def arun_variant_batch_eval_agent(
 
     step_limits = build_step_limits_text(MAX_TOTAL_STEPS, MAX_STEPS_IN_ONE_EPISODE)
     system_prompt = SHELL_REACT_VARIANT_BATCH_EVAL_SYSTEM_PROMPT.replace("{step_limits}", step_limits)
+    if prefer_fewer_steps:
+        system_prompt += f"\n\n{SHELL_REACT_VARIANT_BATCH_EVAL_STEP_EFFICIENCY_SYSTEM_GUIDANCE}"
 
     agent = create_agent(
         model=llm,
@@ -347,6 +351,7 @@ async def arun_variant_batch_eval_agent(
         goal_scene_graph=goal_sg or "null",
         mask_scene_graph=mask_sg or "null",
         background_color=background_color,
+        prefer_fewer_steps=prefer_fewer_steps,
     )
 
     transcript_path = (
@@ -453,6 +458,7 @@ async def arun_variant_batch_eval_agent(
         "llm_model": llm_model,
         "user_instruction": user_instruction,
         "instruction_word_count": instruction_word_count,
+        "prefer_fewer_steps": prefer_fewer_steps,
         "max_turns": max_turns,
         "timeout_seconds": timeout_seconds,
         "num_messages": len(final_messages),
